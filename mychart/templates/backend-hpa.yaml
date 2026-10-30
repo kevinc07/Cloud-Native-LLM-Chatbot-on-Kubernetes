@@ -1,0 +1,23 @@
+{{- if .Values.hpa.enabled }}
+# HorizontalPodAutoscaler:依 CPU 使用率自動調整 backend 的副本數。
+# 使用率 = 實際 CPU / requests。所以 Deployment 一定要有 resources.requests,
+# 沒有的話 HPA 算不出百分比,會一直顯示 <unknown>。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chatbot-backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: chatbot-backend
+  minReplicas: {{ .Values.hpa.minReplicas }}
+  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

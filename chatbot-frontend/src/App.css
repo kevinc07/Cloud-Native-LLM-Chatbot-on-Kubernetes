@@ -1,0 +1,109 @@
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.status {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eee;
+}
+
+.status-ok {
+  background: #d1f7d6;
+  color: #16621f;
+}
+
+.status-unreachable {
+  background: #fbd5d5;
+  color: #7a1212;
+}
+
+.user-id-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #555;
+}
+
+.user-id-bar input {
+  padding: 6px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.chat-window {
+  min-height: 320px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.empty-hint {
+  color: #888;
+  font-size: 14px;
+}
+
+.bubble {
+  padding: 8px 12px;
+  border-radius: 12px;
+  max-width: 80%;
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+.bubble-user {
+  align-self: flex-end;
+  background: #0b84ff;
+  color: white;
+}
+
+.bubble-bot {
+  align-self: flex-start;
+  background: #eee;
+  color: #111;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-form input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.chat-form button {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  background: #0b84ff;
+  color: white;
+  cursor: pointer;
+}
+
+.chat-form button:disabled {
+  background: #99c8f5;
+  cursor: not-allowed;
+}

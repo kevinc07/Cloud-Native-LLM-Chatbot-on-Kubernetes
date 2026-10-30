@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatbot-backend
+spec:
+  # 啟用 HPA 時不能在這裡寫 replicas:否則每次 helm upgrade 都會把 HPA 調好的
+  # 副本數蓋回固定值,HPA 的擴縮就白做了。副本數交給 HPA 管。
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: chatbot-backend
+  template:
+    metadata:
+      labels:
+        app: chatbot-backend
+    spec:
+      containers:
+        - name: chatbot-backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          ports:
+            - containerPort: {{ .Values.backend.containerPort }}
+          # requests = 排程時保證給你的量,也是 HPA 算「使用率%」的分母。
+          # limits   = 上限:CPU 超過會被限速(throttle),記憶體超過會被 OOMKilled。
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: chatbot-config
+            - secretRef:
+                name: {{ .Values.secretName }}
+          # Mongo 帳密從 Secret 取值並改名成 app 用的變數(不寫死在程式或 YAML)。
+          env:
+            - name: MONGO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mongo.secretName }}
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mongo.secretName }}
+                  key: MONGO_INITDB_ROOT_PASSWORD

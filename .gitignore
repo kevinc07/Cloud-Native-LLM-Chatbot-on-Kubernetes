@@ -1,0 +1,22 @@
+# 機密:絕對不能進 repo(例如 GOOGLE_API_KEY)
+.env
+.env.local
+!.env.example
+
+# Python
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+build/
+npm-debug.log*
+
+# macOS / 備份檔
+.DS_Store
+*.bak
+
+# 誤複製的重複前端副本(內容與 chatbot-frontend/ 相同),整理 repo 時再決定要不要刪
+chatbot-backend/chatbot-frontend/

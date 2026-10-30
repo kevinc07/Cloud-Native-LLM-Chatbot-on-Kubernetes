@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chatbot-config
+data:
+  GEMINI_MODEL: {{ .Values.config.geminiModel | quote }}
+  TEMPERATURE: {{ .Values.config.temperature | quote }}
+  CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
+  MONGO_HOST: "mongo"
+  MONGO_DB: {{ .Values.mongo.db | quote }}

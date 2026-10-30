@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatbot-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: chatbot-frontend
+  template:
+    metadata:
+      labels:
+        app: chatbot-frontend
+    spec:
+      containers:
+        - name: chatbot-frontend
+          image: acrchatbotkevin.azurecr.io/chatbot-frontend:v2
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chatbot-frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: chatbot-frontend
+  ports:
+    - port: 8080
+      targetPort: 8080 

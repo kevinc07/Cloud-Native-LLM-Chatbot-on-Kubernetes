@@ -1,0 +1,61 @@
+# 放在 repo 根目錄，跟 chatbot-backend/ 、 chatbot-frontend/ 同一層：
+#
+#   repo-root/
+#     chatbot-backend/     <- Day1 已完成
+#     chatbot-frontend/    <- Day2 新增
+#     docker-compose.yml   <- 這份
+#
+# 跑法：repo 根目錄下 docker-compose up --build
+
+services:
+  backend:
+    build:
+      context: ./chatbot-backend
+    container_name: chatbot-backend
+    env_file:
+      - ./chatbot-backend/.env
+    ports:
+      - "8000:8000"
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./chatbot-frontend
+    container_name: chatbot-frontend
+    ports:
+      - "3000:8080"
+    depends_on:
+      - backend
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # 假的 DB：這階段只是練 docker-compose 怎麼把三個服務串起來、
+  # 網路怎麼通，backend 現在還沒真的接它。故意先選 MongoDB 不是隨便挑的
+  # ——Day8 的 StatefulSet + PVC 練習就是用 MongoDB，這裡先混個臉熟，
+  # 之後接得上。
+  db:
+    image: mongo:7
+    container_name: chatbot-db
+    environment:
+      # 跟 Day1 backend 的習慣一致：密碼不寫死在檔案裡，從根目錄的 .env
+      # 讀進來(docker-compose 會自動載入跟它同一層的 .env 做變數替換，
+      # 這跟 backend service 用 env_file 注入到「容器裡」是兩回事)。
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+networks:
+  chatbot-net:
+    driver: bridge
+
+volumes:
+  mongo-data:

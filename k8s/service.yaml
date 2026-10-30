@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: chatbot-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: chatbot-backend
+  ports:
+    - port: 3030
+      targetPort: 8000 
