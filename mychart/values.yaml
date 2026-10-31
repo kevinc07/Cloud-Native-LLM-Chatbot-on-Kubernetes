@@ -3,7 +3,7 @@ replicaCount: 3
 backend:
   image:
     repository: acrchatbotkevin.azurecr.io/chatbot-backend
-    tag: v6
+    tag: v7
   containerPort: 8000
   service:
     port: 3030
@@ -61,3 +61,18 @@ ingress:
 rbac:
   enabled: true
   serviceAccountName: pod-reader
+
+# Day 12:觀測。
+metrics:
+  serviceMonitor:
+    enabled: true            # 讓 Prometheus 抓 backend 的 /metrics
+  dashboard:
+    enabled: true            # 把 Grafana dashboard 當 ConfigMap 部署(sidecar 自動載入)
+    namespace: monitoring    # Grafana 所在的 namespace
+
+# LangSmith(AI 語意層觀測)。API key 放在事先建立的 Secret,不進 git:
+#   kubectl create secret generic langsmith-secret --from-literal=LANGSMITH_API_KEY=...
+langsmith:
+  enabled: true
+  project: chatbot-aks
+  secretName: langsmith-secret

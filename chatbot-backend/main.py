@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 from typing import Optional
 
@@ -8,6 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from chat_store import ChatHistoryStore, PyMongoError
+from metrics import (
+    LLM_LATENCY,
+    LLM_REQUESTS,
+    metrics_middleware,
+    record_llm_usage,
+    render_metrics,
+)
 
 # 本機:從 .env 讀值。在 cluster 裡沒有 .env(被 .dockerignore 排除),
 # 這行不會做任何事,值由 K8s 注入。load_dotenv 預設不覆蓋已存在的環境變數。
@@ -32,6 +40,7 @@ MEMORY_MAX_MESSAGES = 20
 memory: dict[str, list] = {}
 
 app = FastAPI(title="Chatbot Backend")
+app.middleware("http")(metrics_middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -79,6 +88,14 @@ def health():
     """Used later for K8s liveness/readiness probes."""
     return {"status": "ok"}
 
+
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    """Prometheus 來這裡抓指標(pull 模型)。"""
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)
+
+
 def extract_text(content) -> str:
     """Newer models can return content as a string, or as a list of
     structured blocks (e.g. text blocks mixed with other block types).
@@ -113,8 +130,20 @@ def chat(req: ChatRequest, response: Response):
         # the Secret step (Day 5).
         reply = f"[mock reply] got: {req.message} (history={len(history)})"
     else:
-        result = llm.invoke(history + [HumanMessage(content=req.message)])
-        print(result)
+        start = time.perf_counter()
+        try:
+            result = llm.invoke(history + [HumanMessage(content=req.message)])
+        except Exception as e:
+            # 外部依賴失敗(逾時、429 額度用完…)要被記下來,不能只剩一個 500。
+            LLM_REQUESTS.labels(GEMINI_MODEL, "error").inc()
+            LLM_LATENCY.labels(GEMINI_MODEL).observe(time.perf_counter() - start)
+            print(f"[llm] call failed: {type(e).__name__}: {e}", flush=True)
+            raise HTTPException(status_code=502, detail="llm call failed")
+        LLM_REQUESTS.labels(GEMINI_MODEL, "ok").inc()
+        LLM_LATENCY.labels(GEMINI_MODEL).observe(time.perf_counter() - start)
+        record_llm_usage(GEMINI_MODEL, result.usage_metadata)
+        # 只印用量摘要;原本 print(result) 會連同整串 thought signature 一起印出來。
+        print(f"[llm] usage={result.usage_metadata}", flush=True)
         reply = extract_text(result.content)
 
     # 寫入順序固定「先寫 Mongo」——它是唯一的 source of truth。

@@ -1,0 +1,23 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+# ServiceMonitor:告訴 Prometheus「去抓哪個 Service 的哪個 port、哪個路徑」。
+# 這是 Prometheus Operator 提供的 CRD(Day 11 裝 kube-prometheus-stack 時一併裝進來),
+# 沒裝 operator 的 cluster 套這份會失敗,所以用 enabled 開關控制。
+#
+# 運作:Operator 看到這個物件 → 自動改 Prometheus 的設定 → Prometheus 開始每 15 秒
+# 去打每個 backend Pod 的 /metrics。HPA 擴到幾個 Pod 就抓幾個,新 Pod 會自動被納入。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: chatbot-backend
+spec:
+  selector:
+    matchLabels:
+      app: chatbot-backend
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+{{- end }}

@@ -1,0 +1,15 @@
+{{- if .Values.metrics.dashboard.enabled }}
+# Grafana dashboard 當 ConfigMap 部署。
+# kube-prometheus-stack 的 Grafana 內建 sidecar,會監看帶有 grafana_dashboard 標籤的
+# ConfigMap,自動載入成 dashboard——不用手動匯入,dashboard 也跟著 git 版控。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chatbot-dashboard
+  namespace: {{ .Values.metrics.dashboard.namespace }}
+  labels:
+    grafana_dashboard: "1"
+data:
+  chatbot-overview.json: |-
+{{ .Files.Get "dashboards/chatbot-overview.json" | indent 4 }}
+{{- end }}

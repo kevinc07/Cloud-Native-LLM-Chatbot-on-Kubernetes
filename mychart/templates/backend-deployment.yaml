@@ -32,6 +32,19 @@ spec:
                 name: {{ .Values.secretName }}
           # Mongo 帳密從 Secret 取值並改名成 app 用的變數(不寫死在程式或 YAML)。
           env:
+            {{- if .Values.langsmith.enabled }}
+            # LangSmith:LangChain 看到這幾個環境變數就會自動把每次 LLM 呼叫的
+            # prompt / 回應 / token 用量送去 smith.langchain.com,不用改程式邏輯。
+            - name: LANGSMITH_TRACING
+              value: "true"
+            - name: LANGSMITH_PROJECT
+              value: {{ .Values.langsmith.project | quote }}
+            - name: LANGSMITH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.langsmith.secretName }}
+                  key: LANGSMITH_API_KEY
+            {{- end }}
             - name: MONGO_USERNAME
               valueFrom:
                 secretKeyRef:
