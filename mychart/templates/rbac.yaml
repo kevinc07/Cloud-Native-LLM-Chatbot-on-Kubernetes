@@ -1,0 +1,30 @@
+{{- if .Values.rbac.enabled }}
+# RBAC 三件套:「誰」(ServiceAccount)+「能做什麼」(Role)+「把兩者綁起來」(RoleBinding)。
+# 這組是「唯讀 pod」的受限身分:只能 get / list pod,不能 delete、不能碰 Secret。
+# 原則:最小權限(least privilege)——只給完成工作所需的最少權限。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.rbac.serviceAccountName }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+rules:
+  - apiGroups: [""]          # "" = core API group(pod 屬於這一組)
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]   # 沒列出的動作(delete / create / update)一律拒絕
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.rbac.serviceAccountName }}
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

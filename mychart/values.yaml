@@ -56,3 +56,8 @@ mongo:
 ingress:
   frontendHost: chatbot.local
   backendHost: api.chatbot.local
+
+# Day 10:受限的唯讀身分(只能 get/list pod),用來示範 RBAC 擋權限。
+rbac:
+  enabled: true
+  serviceAccountName: pod-reader
