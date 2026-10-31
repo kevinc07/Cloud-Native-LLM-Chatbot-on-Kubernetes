@@ -1,0 +1,72 @@
+# kube-prometheus-stack 的精簡設定(單一小 node 的 AKS 練習用)。
+# 安裝指令見 monitoring/README.md。
+
+# --- Prometheus:抓取並儲存指標 ---------------------------------------------
+prometheus:
+  prometheusSpec:
+    # Day 12 會加 ServiceMonitor 讓 Prometheus 抓我們自己的 app。
+    # 預設 Prometheus 只認「帶有 release=<這個 helm release> 標籤」的 ServiceMonitor,
+    # 設成 false 後,不管標籤為何,整個 cluster 的 ServiceMonitor 都會被抓。
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    retention: 2d            # 只留 2 天,練習用,不需要長期保存
+    resources:
+      requests:
+        cpu: 200m
+        memory: 400Mi
+      limits:
+        memory: 1Gi
+    # 沒設 storageSpec = 用 emptyDir(Pod 重建資料就沒了)。
+    # 練習環境不值得多付一顆雲端硬碟的錢;正式環境要掛 PVC。
+
+# --- Alertmanager:Day 13 的告警會用到,所以保留 ----------------------------
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 50Mi
+
+# --- Grafana:看 dashboard -------------------------------------------------
+grafana:
+  # 管理員帳密放在事先建立的 Secret,不寫在檔案裡(見 README)
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  service:
+    type: ClusterIP          # 不開公開 IP(省錢也較安全),用 kubectl port-forward 連
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+# --- 其他元件 -----------------------------------------------------------
+# AKS 的 control plane 是託管的,這些元件我們連不到,不關的話 Prometheus 會一直報抓取失敗。
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 24Mi
