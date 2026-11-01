@@ -1,5 +1,10 @@
 replicaCount: 3
 
+# 私有 registry(GitLab Container Registry)的拉取憑證,Secret 名稱。
+# Secret 本身含 token,不進 git,由人用 kubectl 建立。
+imagePullSecrets:
+  - name: gitlab-registry
+
 backend:
   image:
     repository: acrchatbotkevin.azurecr.io/chatbot-backend

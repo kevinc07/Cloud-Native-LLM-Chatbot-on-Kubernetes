@@ -20,6 +20,10 @@ spec:
         # 沒有它的話,helm upgrade 改了 ConfigMap,舊 Pod 還在用舊值(envFrom 只在啟動時讀一次)。
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: chatbot-backend
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
