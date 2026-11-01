@@ -57,12 +57,15 @@ spec:
               sum(rate(http_request_duration_seconds_count{path="/health"}[{{ $w }}]))
             )
         {{- end }}
-        # 成本:近 1 小時 token 用量,與「前 23 小時的平均每小時用量」(基準)。
-        # offset 1h 把最近這一小時排除在基準之外,否則突波會把自己的基準墊高、蓋住自己。
+        # 成本:近 1 小時 token 用量,與「基準」。
+        # 基準 = 前 23 小時「每小時用量」的『中位數』,而且用 offset 1h 排除最近這一小時。
+        # 為什麼用中位數不用平均:一次突波滑出最近 1 小時後,會被算進「前 23 小時」;
+        # 用平均的話,基準會被單一突波墊高約 23 小時,期間第二次暴增可能不會告警。
+        # 中位數對少數極端值不敏感,突波不會主宰基準。沒有歷史資料時基準為 0,由絕對下限兜底。
         - record: llm:tokens_per_hour:increase1h
           expr: sum(increase(llm_tokens_total{type=~"input|output"}[1h]))
         - record: llm:tokens_per_hour:baseline23h
-          expr: (sum(increase(llm_tokens_total{type=~"input|output"}[23h] offset 1h)) / 23) or vector(0)
+          expr: quantile_over_time(0.5, llm:tokens_per_hour:increase1h[23h] offset 1h) or vector(0)
 
     # ---- 告警 -------------------------------------------------------------
     - name: chatbot-slo-alerts

@@ -8,7 +8,7 @@ panels = []
 _id = [0]
 
 
-def panel(title, kind, exprs, x, y, w, h, unit=None, desc=None, legend=None, decimals=None):
+def panel(title, kind, exprs, x, y, w, h, unit=None, desc=None, legend=None, decimals=None, thresholds=None):
     _id[0] += 1
     p = {
         "id": _id[0],
@@ -29,6 +29,14 @@ def panel(title, kind, exprs, x, y, w, h, unit=None, desc=None, legend=None, dec
         p["fieldConfig"]["defaults"]["unit"] = unit
     if decimals is not None:
         p["fieldConfig"]["defaults"]["decimals"] = decimals
+    if thresholds:
+        # thresholds = [(起點值或 None, 顏色), ...]。None 代表從負無限大開始的底色。
+        # 沒設的話 Grafana 預設「超過 80 才變紅」,對 0~1 的比例完全沒意義(SLI 0% 還是綠的)。
+        p["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
+        p["fieldConfig"]["defaults"]["thresholds"] = {
+            "mode": "absolute",
+            "steps": [{"color": c, "value": v} for v, c in thresholds],
+        }
     if desc:
         p["description"] = desc
     if kind == "stat":
@@ -44,7 +52,8 @@ panels.append(panel(
     "/chat 錯誤率 (5xx)", "stat",
     ['sum(rate(http_requests_total{path="/chat",status=~"5.."}[5m])) / sum(rate(http_requests_total{path="/chat"}[5m]))'],
     6, 0, 6, 4, unit="percentunit", decimals=1,
-    desc="5xx 佔 /chat 請求的比例。502 = Gemini 呼叫失敗(逾時、額度用完等)。"))
+    desc="5xx 佔 /chat 請求的比例。502 = Gemini 呼叫失敗(逾時、額度用完等)。",
+    thresholds=[(None, "green"), (0.01, "red")]))
 panels.append(panel(
     "近 1 小時 token 用量", "stat",
     ['sum by (type) (increase(llm_tokens_total{type!="cache_read"}[1h]))'], 12, 0, 6, 4, unit="short",
@@ -98,21 +107,26 @@ slo = []
 slo.append(panel(
     "可用性 SLI (近 1h)", "stat",
     ['1 - sli:chat_error_ratio:rate1h'], 0, 0, 5, 4, unit="percentunit", decimals=2,
-    desc="SLO:99%。= 1 - (/chat 5xx 比例)。無流量時顯示 N/A。"))
+    desc="SLO:99%。= 1 - (/chat 5xx 比例)。無流量時顯示 N/A。",
+    thresholds=[(None, "red"), (0.99, "green")]))
 slo.append(panel(
     "可用性 burn rate (1h)", "stat",
     ['sli:chat_error_ratio:rate1h / 0.01'], 5, 0, 5, 4, unit="short", decimals=1,
-    desc="預算消耗速度。1 = 剛好花完;>14.4 且 5m 窗也超標 → ChatAvailabilityFastBurn 告警。"))
+    desc="預算消耗速度。1 = 剛好花完;>14.4 且 5m 窗也超標 → ChatAvailabilityFastBurn 告警。",
+    thresholds=[(None, "green"), (1, "yellow"), (14.4, "red")]))
 slo.append(panel(
     "延遲 SLI:<12s 比例 (近 1h)", "stat",
     ['1 - sli:chat_slow_ratio:rate1h'], 10, 0, 5, 4, unit="percentunit", decimals=2,
-    desc="SLO:95% 的 /chat 在 12 秒內。12 秒來自 Day 12 實測 p95 ≈ 9.75s(Gemini reasoning),不是照搬 3s。"))
+    desc="SLO:95% 的 /chat 在 12 秒內。12 秒來自 Day 12 實測 p95 ≈ 9.75s(Gemini reasoning),不是照搬 3s。",
+    thresholds=[(None, "red"), (0.95, "green")]))
 slo.append(panel(
     "延遲 burn rate (1h)", "stat",
-    ['sli:chat_slow_ratio:rate1h / 0.05'], 15, 0, 5, 4, unit="short", decimals=1))
+    ['sli:chat_slow_ratio:rate1h / 0.05'], 15, 0, 5, 4, unit="short", decimals=1,
+    thresholds=[(None, "green"), (1, "yellow"), (14.4, "red")]))
 slo.append(panel(
     "Firing 中的告警", "stat",
-    ['count(ALERTS{alertstate="firing",alertname=~"Chat.*|LLM.*"}) or vector(0)'], 20, 0, 4, 4, unit="short", decimals=0))
+    ['count(ALERTS{alertstate="firing",alertname=~"Chat.*|LLM.*"}) or vector(0)'], 20, 0, 4, 4, unit="short", decimals=0,
+    thresholds=[(None, "green"), (1, "red")]))
 slo.append(panel(
     "Burn rate 時間序列(1h 窗)", "timeseries",
     ['sli:chat_error_ratio:rate1h / 0.01', 'sli:chat_slow_ratio:rate1h / 0.05', 'vector(14.4)'],
