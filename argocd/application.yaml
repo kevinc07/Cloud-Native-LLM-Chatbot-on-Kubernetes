@@ -1,0 +1,22 @@
+# ArgoCD Application:告訴 ArgoCD「請讓 cluster 長得跟 git 裡這個 Helm chart 一樣」。
+# 這個檔案本身只需要 kubectl apply 一次(bootstrap),之後所有變更都走 git push。
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chatbot
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/usc-group6842244/cloud-native-llm-chatbot-onkubernetes.git
+    targetRevision: main
+    path: mychart            # repo 裡 Helm chart 的位置
+  destination:
+    server: https://kubernetes.default.svc   # 就是 ArgoCD 自己所在的這個 cluster
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true            # git 裡刪掉的資源,cluster 也跟著刪
+      selfHeal: true         # 有人手動 kubectl 改了,ArgoCD 會改回 git 的樣子
+    syncOptions:
+      - CreateNamespace=true

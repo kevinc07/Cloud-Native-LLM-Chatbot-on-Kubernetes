@@ -1,0 +1,27 @@
+# ArgoCD 的安裝設定(Helm chart: argo/argo-cd)。
+# 單一小 node 資源有限,所以把用不到的元件關掉、request 壓低。
+dex:
+  enabled: false            # 外部 SSO 登入,練習環境用內建 admin 帳號就好
+notifications:
+  enabled: false            # Slack/Email 通知,用不到
+applicationSet:
+  enabled: false            # 一次產生多個 Application 的功能,用不到
+configs:
+  params:
+    server.insecure: true   # 用 port-forward 連線,不需要 ArgoCD 自己的 TLS
+controller:
+  resources:
+    requests: { cpu: 50m, memory: 200Mi }
+    limits: { memory: 600Mi }
+server:
+  resources:
+    requests: { cpu: 20m, memory: 80Mi }
+    limits: { memory: 300Mi }
+repoServer:
+  resources:
+    requests: { cpu: 20m, memory: 100Mi }
+    limits: { memory: 400Mi }
+redis:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 128Mi }
