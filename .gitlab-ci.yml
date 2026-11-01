@@ -1,0 +1,73 @@
+# GitLab CI pipeline:  test  →  build  (只有 main 分支才會 build 並推 image)
+#
+# 「測試失敗就擋住發版」靠的是 stages 的順序:同一個 pipeline 裡,
+# 前一個 stage 只要有任何 job 失敗,後面的 stage 就不會執行 → image 不會被建出來。
+#
+# image 推到 GitLab Container Registry($CI_REGISTRY_IMAGE),登入用的帳密是 GitLab 自動注入的
+# 變數(CI_REGISTRY_USER / CI_REGISTRY_PASSWORD),不需要自己設任何 secret。
+
+stages:
+  - test
+  - build
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+# ---- test ------------------------------------------------------------------
+backend-test:
+  stage: test
+  image: python:3.12-slim
+  cache:
+    key: pip-$CI_COMMIT_REF_SLUG
+    paths: [.cache/pip]
+  script:
+    - cd chatbot-backend
+    - pip install -r requirements-dev.txt
+    - python -m pytest -v --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: chatbot-backend/report.xml
+
+helm-lint:
+  stage: test
+  image:
+    name: alpine/helm:3.15.4
+    entrypoint: [""]
+  script:
+    - helm lint mychart
+    # 真的渲染一次:lint 抓不到的模板錯誤(例如 values 欄位拼錯)在這裡會失敗
+    - helm template chatbot mychart > /dev/null
+
+# ---- build -----------------------------------------------------------------
+# 用 docker-in-docker:在 job 裡再起一個 docker daemon 來 build image。
+.docker-build:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+build-backend:
+  extends: .docker-build
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/chatbot-backend"
+    # 先拉 latest 當 layer cache(第一次不存在會失敗,所以 || true)
+    - docker pull "$IMAGE:latest" || true
+    - docker build --cache-from "$IMAGE:latest" -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" chatbot-backend
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
+
+build-frontend:
+  extends: .docker-build
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/chatbot-frontend"
+    - docker pull "$IMAGE:latest" || true
+    - docker build --cache-from "$IMAGE:latest" -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" chatbot-frontend
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
