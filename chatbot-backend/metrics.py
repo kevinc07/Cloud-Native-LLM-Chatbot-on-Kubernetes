@@ -21,13 +21,14 @@ HTTP_REQUESTS = Counter(
     "HTTP requests handled",
     ["method", "path", "status"],
 )
-# bucket 邊界要涵蓋 SLO 門檻:/health 要 <200ms、/chat 要 <3s(Day 13),
-# 所以 0.2 和 3 都放進去,PromQL 才能精確算「小於門檻的比例」。
+# bucket 邊界一定要剛好落在 SLO 門檻上:/health 要 <200ms(0.2)、/chat 要 <12s(12)。
+# PromQL 算「小於門檻的比例」是直接取門檻那個 bucket,門檻不在邊界上就只能估算。
+# (SLO 實測依據:Day 12 量到 /chat p95 約 9.75s,主因是 Gemini 的 reasoning。)
 HTTP_LATENCY = Histogram(
     "http_request_duration_seconds",
     "HTTP request latency",
     ["method", "path"],
-    buckets=(0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 3, 5, 10, 30),
+    buckets=(0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 3, 5, 8, 12, 20, 30, 60),
 )
 
 # --- LLM 層(AI 觀測):呼叫 Gemini 的延遲、結果、token 用量 -------------------
@@ -40,7 +41,7 @@ LLM_LATENCY = Histogram(
     "llm_request_duration_seconds",
     "LLM call latency",
     ["model"],
-    buckets=(0.5, 1, 2, 3, 5, 8, 13, 20, 30, 60),
+    buckets=(0.5, 1, 2, 3, 5, 8, 12, 20, 30, 60),
 )
 # type: input | output | cache_read。Day 12 用它估成本,Day 13 用它做成本護欄告警。
 # cache_read 是 input 的子集(Gemini implicit caching 命中量),只觀測、不優化。
@@ -49,6 +50,28 @@ LLM_TOKENS = Counter(
     "LLM tokens used",
     ["model", "type"],
 )
+
+
+def init_series(model: str) -> None:
+    """啟動時把已知的時間序列先建立成 0。
+
+    Counter / Histogram 的 labels(...) 第一次被呼叫才會產生那條序列,所以第一次請求之後
+    Prometheus 抓到的第一筆就已經 > 0,沒有「前一筆」可比,rate()/increase() 會漏掉那次增量;
+    而且「從來沒出現過」的序列(例如 5xx)會讓 SLI 的分子變成『沒有資料』而不是 0。
+    預先建立可以兩個問題一起避免。
+    """
+    for method, path, statuses in (
+        ("POST", "/chat", ("200", "422", "500", "502", "503")),
+        ("GET", "/health", ("200",)),
+    ):
+        for status in statuses:
+            HTTP_REQUESTS.labels(method, path, status)
+        HTTP_LATENCY.labels(method, path)
+    for status in ("ok", "error"):
+        LLM_REQUESTS.labels(model, status)
+    LLM_LATENCY.labels(model)
+    for token_type in ("input", "output", "cache_read"):
+        LLM_TOKENS.labels(model, token_type)
 
 
 def record_llm_usage(model: str, usage: dict | None) -> None:

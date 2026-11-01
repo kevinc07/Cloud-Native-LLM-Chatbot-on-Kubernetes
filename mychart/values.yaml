@@ -3,7 +3,7 @@ replicaCount: 3
 backend:
   image:
     repository: acrchatbotkevin.azurecr.io/chatbot-backend
-    tag: v7
+    tag: v9
   containerPort: 8000
   service:
     port: 3030
@@ -66,6 +66,8 @@ rbac:
 metrics:
   serviceMonitor:
     enabled: true            # 讓 Prometheus 抓 backend 的 /metrics
+  prometheusRule:
+    enabled: true            # Day 13:SLO 的 recording rule 與告警
   dashboard:
     enabled: true            # 把 Grafana dashboard 當 ConfigMap 部署(sidecar 自動載入)
     namespace: monitoring    # Grafana 所在的 namespace
@@ -76,3 +78,36 @@ langsmith:
   enabled: true
   project: chatbot-aks
   secretName: langsmith-secret
+
+# Day 13:SLO 設定。數字都有依據,不是照搬:
+# - /chat 要打外部 Gemini,Day 12 實測 p95 約 9.75s(reasoning 佔大宗),所以訂 12s,不是 3s。
+# - /health 不打 LLM,才適合訂 200ms 這種嚴格標準。兩者分開訂。
+slo:
+  chat:
+    availabilityTarget: 0.99          # 99% 的 /chat 請求不是 5xx → error budget = 1%
+    latencyTarget: 0.95               # 95% 的 /chat 請求在門檻內 → error budget = 5%
+    latencyThreshold: "12.0"          # 秒。必須剛好等於 histogram 的 bucket 邊界(le 標籤),見 metrics.py
+  health:
+    latencyTarget: 0.99
+    latencyThreshold: "0.2"
+  # burn rate = 預算消耗速度的倍數。1 = 剛好在 SLO 窗口結束時花完預算。
+  # 14.4× 持續 1 小時 = 一次燒掉 30 天預算的 2%;6× 持續 6 小時 = 燒掉 5%(Google SRE Workbook 的建議值)。
+  burnRate:
+    fast: 14.4
+    slow: 6
+  # 流量太低時,幾個錯誤就會讓比例失真(3 個請求錯 1 個 = 33%)。1 小時內請求數低於此值不告警。
+  minRequestsPerHour: 10
+  # 成本護欄:過去 1 小時 token 用量超過「前 23 小時平均每小時用量」的 N 倍就告警;
+  # 另設絕對下限,避免沒有歷史資料(基準=0)時任何一點用量都告警。
+  cost:
+    spikeMultiplier: 3
+    minTokensPerHour: 20000
+
+# Day 13:假 LLM(測試替身),只用於演練/負載測試,不打 Gemini、不耗額度。正式環境務必關閉。
+fakeLlm:
+  enabled: false
+  delaySeconds: 0           # 模擬 Gemini 變慢
+  errorRate: 0              # 0~1,模擬 429 / 逾時
+  inputTokens: 100
+  outputTokens: 300         # 調大可模擬 token 暴增
+

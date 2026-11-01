@@ -15,6 +15,10 @@ spec:
     metadata:
       labels:
         app: chatbot-backend
+      annotations:
+        # ConfigMap 內容一變,這個 hash 就跟著變 → Pod template 變了 → 自動滾動重啟。
+        # 沒有它的話,helm upgrade 改了 ConfigMap,舊 Pod 還在用舊值(envFrom 只在啟動時讀一次)。
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       containers:
         - name: chatbot-backend

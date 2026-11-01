@@ -1,0 +1,137 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- $chat := .Values.slo.chat }}
+{{- $health := .Values.slo.health }}
+{{- $availBudget := printf "%.4f" (subf 1.0 $chat.availabilityTarget) }}
+{{- $latBudget := printf "%.4f" (subf 1.0 $chat.latencyTarget) }}
+{{- $fast := .Values.slo.burnRate.fast }}
+{{- $slow := .Values.slo.burnRate.slow }}
+{{- $minReq := .Values.slo.minRequestsPerHour }}
+# SLO 的規則檔(PrometheusRule 是 Prometheus Operator 的 CRD,Operator 會把它載入 Prometheus)。
+#
+# 名詞:
+#   SLI = 實際量到的數字(例:「過去 1 小時 /chat 有幾 % 失敗」)
+#   SLO = 目標(例:「99% 的 /chat 要成功」)
+#   error budget = 允許失敗的額度 = 1 - SLO(99% → 1%)
+#   burn rate = 預算消耗速度 = 實際失敗率 / error budget。
+#               1 代表剛好在窗口結束時花完;14.4 代表花得 14.4 倍快。
+#
+# 為什麼用「多時間窗」告警:
+#   只看短窗(5m)會被瞬間抖動誤報;只看長窗(1h)發現太慢、恢復後還會繼續響。
+#   所以「長窗 AND 短窗」同時超標才告警:長窗證明問題夠大,短窗證明它『現在』還在發生。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: chatbot-slo
+spec:
+  groups:
+    # ---- Recording rules:把複雜的 PromQL 預先算好存成新的時間序列 -------------
+    # 命名慣例 level:metric:operations。告警與 Grafana 直接引用,不用每次重算,也讓語意一致。
+    - name: chatbot-sli
+      interval: 30s
+      rules:
+        {{- range $w := list "5m" "30m" "1h" "6h" }}
+        # /chat 成功率 SLI:5xx 佔全部請求的比例(越低越好)。
+        # 分子加 `or vector(0)`:完全沒有 5xx 時那條序列不存在,不補的話 SLI 會變成「無資料」而不是 0。
+        - record: sli:chat_error_ratio:rate{{ $w }}
+          expr: |
+            (sum(rate(http_requests_total{path="/chat",status=~"5.."}[{{ $w }}])) or vector(0))
+            /
+            sum(rate(http_requests_total{path="/chat"}[{{ $w }}]))
+        # /chat 延遲 SLI:「慢於門檻」的請求比例 = 1 - (門檻內的請求 / 全部請求)
+        # 取 histogram 在門檻那個 bucket 的累計值,所以門檻必須是 bucket 邊界。
+        - record: sli:chat_slow_ratio:rate{{ $w }}
+          expr: |
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{path="/chat",le={{ $chat.latencyThreshold | quote }}}[{{ $w }}]))
+              /
+              sum(rate(http_request_duration_seconds_count{path="/chat"}[{{ $w }}]))
+            )
+        {{- end }}
+        {{- range $w := list "5m" "1h" }}
+        # /health 延遲 SLI(不打 LLM,標準嚴格得多)
+        - record: sli:health_slow_ratio:rate{{ $w }}
+          expr: |
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{path="/health",le={{ $health.latencyThreshold | quote }}}[{{ $w }}]))
+              /
+              sum(rate(http_request_duration_seconds_count{path="/health"}[{{ $w }}]))
+            )
+        {{- end }}
+        # 成本:近 1 小時 token 用量,與「前 23 小時的平均每小時用量」(基準)。
+        # offset 1h 把最近這一小時排除在基準之外,否則突波會把自己的基準墊高、蓋住自己。
+        - record: llm:tokens_per_hour:increase1h
+          expr: sum(increase(llm_tokens_total{type=~"input|output"}[1h]))
+        - record: llm:tokens_per_hour:baseline23h
+          expr: (sum(increase(llm_tokens_total{type=~"input|output"}[23h] offset 1h)) / 23) or vector(0)
+
+    # ---- 告警 -------------------------------------------------------------
+    - name: chatbot-slo-alerts
+      rules:
+        # 成功率:快燒(page)——短時間內大量失敗,要立刻處理
+        - alert: ChatAvailabilityFastBurn
+          expr: |
+            (sli:chat_error_ratio:rate1h / {{ $availBudget }} > {{ $fast }})
+            and (sli:chat_error_ratio:rate5m / {{ $availBudget }} > {{ $fast }})
+            and (sum(increase(http_requests_total{path="/chat"}[1h])) >= {{ $minReq }})
+          for: 2m
+          labels:
+            severity: page
+            slo: chat-availability
+          annotations:
+            summary: "/chat 成功率 error budget 正在快速燃燒"
+            description: {{ printf "/chat 的 5xx 比例在 1 小時與 5 分鐘窗都超過 SLO 預算的 %v 倍(SLO %v)。" $fast $chat.availabilityTarget | quote }}
+
+        # 成功率:慢燒(ticket)——問題不大但持續,積少成多會花光預算
+        - alert: ChatAvailabilitySlowBurn
+          expr: |
+            (sli:chat_error_ratio:rate6h / {{ $availBudget }} > {{ $slow }})
+            and (sli:chat_error_ratio:rate30m / {{ $availBudget }} > {{ $slow }})
+            and (sum(increase(http_requests_total{path="/chat"}[1h])) >= {{ $minReq }})
+          for: 15m
+          labels:
+            severity: ticket
+            slo: chat-availability
+          annotations:
+            summary: "/chat 成功率 error budget 正在緩慢燃燒"
+
+        # 延遲:快燒
+        - alert: ChatLatencyFastBurn
+          expr: |
+            (sli:chat_slow_ratio:rate1h / {{ $latBudget }} > {{ $fast }})
+            and (sli:chat_slow_ratio:rate5m / {{ $latBudget }} > {{ $fast }})
+            and (sum(increase(http_requests_total{path="/chat"}[1h])) >= {{ $minReq }})
+          for: 2m
+          labels:
+            severity: page
+            slo: chat-latency
+          annotations:
+            summary: "/chat 延遲 error budget 正在快速燃燒"
+            description: {{ printf "超過 %s 秒的 /chat 請求比例,在 1 小時與 5 分鐘窗都超過 SLO 預算的 %v 倍(SLO %v)。" $chat.latencyThreshold $fast $chat.latencyTarget | quote }}
+
+        # 延遲:慢燒
+        - alert: ChatLatencySlowBurn
+          expr: |
+            (sli:chat_slow_ratio:rate6h / {{ $latBudget }} > {{ $slow }})
+            and (sli:chat_slow_ratio:rate30m / {{ $latBudget }} > {{ $slow }})
+            and (sum(increase(http_requests_total{path="/chat"}[1h])) >= {{ $minReq }})
+          for: 15m
+          labels:
+            severity: ticket
+            slo: chat-latency
+          annotations:
+            summary: "/chat 延遲 error budget 正在緩慢燃燒"
+
+        # 成本護欄(跟延遲 SLO 分開管理):抓無限重試、濫用、context 意外暴增。
+        # 條件 = 近 1 小時用量 > max(N × 基準, 絕對下限)。clamp_min 實作「取較大者」。
+        - alert: LLMTokenUsageSpike
+          expr: |
+            llm:tokens_per_hour:increase1h
+              > clamp_min(llm:tokens_per_hour:baseline23h * {{ .Values.slo.cost.spikeMultiplier }}, {{ .Values.slo.cost.minTokensPerHour }})
+          for: 5m
+          labels:
+            severity: ticket
+            slo: llm-cost
+          annotations:
+            summary: "LLM token 用量異常飆高"
+            description: {{ printf "近 1 小時 token 用量超過基準的 %v 倍(且高於絕對下限 %v)。常見原因:重試風暴、被濫用、對話歷史意外變長。" .Values.slo.cost.spikeMultiplier .Values.slo.cost.minTokensPerHour | quote }}
+{{- end }}

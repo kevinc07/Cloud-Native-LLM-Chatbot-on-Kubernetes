@@ -12,6 +12,7 @@ from chat_store import ChatHistoryStore, PyMongoError
 from metrics import (
     LLM_LATENCY,
     LLM_REQUESTS,
+    init_series,
     metrics_middleware,
     record_llm_usage,
     render_metrics,
@@ -54,7 +55,12 @@ app.add_middleware(
 # card needed). Swap the import/model if you move to a different provider
 # later — the rest of the app doesn't need to change.
 llm = None
-if os.getenv("GOOGLE_API_KEY"):
+if os.getenv("FAKE_LLM", "").lower() == "true":
+    # 演練/負載測試用的替身,見 fake_llm.py。不打 Gemini、不耗額度。
+    from fake_llm import FakeLLM
+
+    llm = FakeLLM.from_env()
+elif os.getenv("GOOGLE_API_KEY"):
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=TEMPERATURE)
@@ -63,10 +69,11 @@ if os.getenv("GOOGLE_API_KEY"):
 print(
     f"[startup] GEMINI_MODEL={GEMINI_MODEL} TEMPERATURE={TEMPERATURE} "
     f"CORS_ORIGINS={CORS_ORIGINS} GOOGLE_API_KEY_set={bool(os.getenv('GOOGLE_API_KEY'))} "
-    f"MONGO_ENABLED={store.enabled}",
+    f"MONGO_ENABLED={store.enabled} FAKE_LLM={type(llm).__name__ == 'FakeLLM'}",
     flush=True,
 )
 store.ensure_index()
+init_series(GEMINI_MODEL)
 
 # --- Schemas ---------------------------------------------------------------
 class ChatRequest(BaseModel):

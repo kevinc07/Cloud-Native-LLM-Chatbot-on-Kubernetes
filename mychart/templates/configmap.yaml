@@ -8,3 +8,10 @@ data:
   CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
   MONGO_HOST: "mongo"
   MONGO_DB: {{ .Values.mongo.db | quote }}
+{{- if .Values.fakeLlm.enabled }}
+  FAKE_LLM: "true"
+  FAKE_LLM_DELAY_SECONDS: {{ .Values.fakeLlm.delaySeconds | quote }}
+  FAKE_LLM_ERROR_RATE: {{ .Values.fakeLlm.errorRate | quote }}
+  FAKE_LLM_INPUT_TOKENS: {{ .Values.fakeLlm.inputTokens | quote }}
+  FAKE_LLM_OUTPUT_TOKENS: {{ .Values.fakeLlm.outputTokens | quote }}
+{{- end }}
