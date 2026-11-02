@@ -8,6 +8,12 @@ data:
   CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
   MONGO_HOST: "mongo"
   MONGO_DB: {{ .Values.mongo.db | quote }}
+  HISTORY_MAX_MESSAGES: {{ .Values.config.historyMaxMessages | quote }}
+  MAX_OUTPUT_TOKENS: {{ .Values.config.maxOutputTokens | quote }}
+{{- if .Values.redis.enabled }}
+  REDIS_HOST: "redis"
+  REDIS_TTL_SECONDS: {{ .Values.redis.ttlSeconds | quote }}
+{{- end }}
 {{- if .Values.fakeLlm.enabled }}
   FAKE_LLM: "true"
   FAKE_LLM_DELAY_SECONDS: {{ .Values.fakeLlm.delaySeconds | quote }}

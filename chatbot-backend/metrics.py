@@ -51,6 +51,14 @@ LLM_TOKENS = Counter(
     ["model", "type"],
 )
 
+# --- 快取層:Redis cache-aside 的命中情況(Day 20)------------------------------
+# result: hit(Redis 有)| miss(Redis 沒有,改讀 Mongo 並回填)| error(Redis 連不上,降級直讀 Mongo)
+CACHE_REQUESTS = Counter(
+    "cache_requests_total",
+    "Conversation history lookups by cache result",
+    ["result"],
+)
+
 
 def init_series(model: str) -> None:
     """啟動時把已知的時間序列先建立成 0。
@@ -70,6 +78,8 @@ def init_series(model: str) -> None:
     for status in ("ok", "error"):
         LLM_REQUESTS.labels(model, status)
     LLM_LATENCY.labels(model)
+    for result in ("hit", "miss", "error"):
+        CACHE_REQUESTS.labels(result)
     for token_type in ("input", "output", "cache_read"):
         LLM_TOKENS.labels(model, token_type)
 

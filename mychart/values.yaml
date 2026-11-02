@@ -40,6 +40,8 @@ config:
   geminiModel: "gemini-3.6-flash"
   temperature: "0.3"
   corsOrigins: "http://chatbot.local"
+  historyMaxMessages: "20"   # 送給 LLM 的歷史上限(則數)
+  maxOutputTokens: "2048"    # 限制單次輸出(含 reasoning token),成本控制
 
 secretName: chatbot-secret
 
@@ -57,6 +59,16 @@ mongo:
   # 事先用 kubectl create secret 建立,含 MONGO_INITDB_ROOT_USERNAME / PASSWORD
   secretName: mongo-secret
   db: chatbot
+
+# Day 20:Redis 快取(cache-aside)。資料真相在 mongo,這裡丟了可重建。
+redis:
+  enabled: true
+  image: redis:7-alpine
+  maxmemory: 64mb
+  ttlSeconds: 1800          # 快取 30 分鐘沒被寫入就過期,下次讀取從 Mongo 重建
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 96Mi }
 
 ingress:
   frontendHost: chatbot.local

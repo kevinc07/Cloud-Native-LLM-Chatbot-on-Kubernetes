@@ -1,0 +1,60 @@
+{{- if .Values.redis.enabled }}
+# Redis:對話歷史的快取(cache-aside),不是資料來源——資料的唯一真相在 MongoDB。
+# 所以故意不做持久化(--save "" --appendonly no)、不做 HA:Redis 掛了或重啟,
+# 後端會降級為直讀 Mongo(變慢但不壞),快取之後自動重建。(已知限制:單一實例)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image | quote }}
+          args:
+            - redis-server
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            # 記憶體滿了就淘汰最久沒用的 key,而不是拒絕寫入——快取丟東西沒關係。
+            - --maxmemory
+            - {{ .Values.redis.maxmemory | quote }}
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+{{- end }}

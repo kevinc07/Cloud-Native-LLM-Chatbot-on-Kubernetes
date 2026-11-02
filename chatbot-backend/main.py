@@ -31,14 +31,10 @@ CORS_ORIGINS = [
 ]
 
 # 對話紀錄的長期儲存(Mongo = source of truth),細節都在 chat_store.py。
-store = ChatHistoryStore()
+store = ChatHistoryStore.from_env()
 
-# 記憶體版對話記憶:{conversation_id: [messages]}。
-# 故意保留這個「不可水平擴展」的設計:每個 pod 各有一份,scale 到多個 replica 後
-# 同一段對話打到不同 pod 就會失憶。Day 9 要親眼看到這個 bug,Day 20 用 Redis 修掉。
-# 注意 Mongo 在這個階段只「寫」不「讀」,讀的修復留給 Day 20。
-MEMORY_MAX_MESSAGES = 20
-memory: dict[str, list] = {}
+# 對話記憶不再放在 pod 的記憶體裡(那樣無法水平擴展):
+# 讀 = Redis 快取 → 沒有就讀 Mongo;寫 = 先 Mongo 再更新 Redis。細節見 chat_store.py。
 
 app = FastAPI(title="Chatbot Backend")
 app.middleware("http")(metrics_middleware)
@@ -63,13 +59,18 @@ if os.getenv("FAKE_LLM", "").lower() == "true":
 elif os.getenv("GOOGLE_API_KEY"):
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=TEMPERATURE)
+    # max_output_tokens:限制輸出長度(連同 reasoning token),是「歷史長度 + 輸出長度」兩道成本控制之一。
+    llm = ChatGoogleGenerativeAI(
+        model=GEMINI_MODEL,
+        temperature=TEMPERATURE,
+        max_output_tokens=int(os.getenv("MAX_OUTPUT_TOKENS", "2048")),
+    )
 
 # 啟動時印出設定,讓 kubectl logs -f 看得到(只印非敏感值,key 只印有沒有)
 print(
     f"[startup] GEMINI_MODEL={GEMINI_MODEL} TEMPERATURE={TEMPERATURE} "
     f"CORS_ORIGINS={CORS_ORIGINS} GOOGLE_API_KEY_set={bool(os.getenv('GOOGLE_API_KEY'))} "
-    f"MONGO_ENABLED={store.enabled} FAKE_LLM={type(llm).__name__ == 'FakeLLM'}",
+    f"MONGO_ENABLED={store.enabled} REDIS_ENABLED={store.cache_enabled} FAKE_LLM={type(llm).__name__ == 'FakeLLM'}",
     flush=True,
 )
 store.ensure_index()
@@ -124,10 +125,18 @@ def chat(req: ChatRequest, response: Response):
     from langchain_core.messages import AIMessage, HumanMessage
 
     conversation_id = req.conversation_id or uuid.uuid4().hex
-    history = memory.get(conversation_id, [])
+    try:
+        stored = store.get_history(conversation_id)
+    except PyMongoError as e:
+        print(f"[mongo] get_history failed: {e}", flush=True)
+        raise HTTPException(status_code=503, detail="conversation store unavailable")
+    history = [
+        (HumanMessage if m["role"] == "user" else AIMessage)(content=m["content"])
+        for m in stored
+    ]
 
-    # 診斷用 header:哪個 pod 回答、它「看到」幾則歷史。Day 9 用來證明多 replica
-    # 時記憶不一致(同一段對話打到不同 pod,history 長度會忽然歸零)。
+    # 診斷用 header:哪個 pod 回答、它「看到」幾則歷史。Day 9 用它抓到多 replica 記憶不一致;
+    # Day 20 改用 Redis+Mongo 後,不管哪個 pod 回答,長度都該每輪 +2。
     response.headers["X-Served-By"] = os.getenv("HOSTNAME", "local")
     response.headers["X-History-Len"] = str(len(history))
 
@@ -153,17 +162,14 @@ def chat(req: ChatRequest, response: Response):
         print(f"[llm] usage={result.usage_metadata}", flush=True)
         reply = extract_text(result.content)
 
-    # 寫入順序固定「先寫 Mongo」——它是唯一的 source of truth。
-    # 寫失敗就回 503、不更新記憶體,避免「使用者看到回覆但紀錄沒存」。
+    # 寫入順序固定「先寫 Mongo」——它是唯一的 source of truth,成功後才更新 Redis。
+    # 寫失敗就回 503、快取不動,避免「使用者看到回覆但紀錄沒存」。
     try:
         store.append_turn(conversation_id, req.user_id, req.message, reply)
     except PyMongoError as e:
         print(f"[mongo] append_turn failed: {e}", flush=True)
         raise HTTPException(status_code=503, detail="conversation store unavailable")
 
-    memory[conversation_id] = (
-        history + [HumanMessage(content=req.message), AIMessage(content=reply)]
-    )[-MEMORY_MAX_MESSAGES:]
     return ChatResponse(
         user_id=req.user_id, conversation_id=conversation_id, reply=reply
     )

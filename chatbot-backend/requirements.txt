@@ -6,3 +6,4 @@ langchain-google-genai
 python-dotenv
 pymongo
 prometheus-client
+redis==5.2.1

@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 import main
+from chat_store import ChatHistoryStore
 
 
 class StubLLM:
@@ -44,9 +45,8 @@ class BrokenLLM:
 @pytest.fixture(autouse=True)
 def isolate(monkeypatch):
     monkeypatch.setattr(main, "llm", None)
-    main.memory.clear()
+    monkeypatch.setattr(main, "store", ChatHistoryStore())  # 無 Mongo/Redis → 程序內 dict
     yield
-    main.memory.clear()
 
 
 @pytest.fixture

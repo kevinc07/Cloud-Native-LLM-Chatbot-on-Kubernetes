@@ -38,7 +38,7 @@
   },
   "panels": [
     {
-      "id": 11,
+      "id": 13,
       "title": "可用性 SLI (近 1h)",
       "type": "stat",
       "datasource": {
@@ -97,7 +97,7 @@
       "description": "SLO:99%。= 1 - (/chat 5xx 比例)。無流量時顯示 N/A。"
     },
     {
-      "id": 12,
+      "id": 14,
       "title": "可用性 burn rate (1h)",
       "type": "stat",
       "datasource": {
@@ -160,7 +160,7 @@
       "description": "預算消耗速度。1 = 剛好花完;>14.4 且 5m 窗也超標 → ChatAvailabilityFastBurn 告警。"
     },
     {
-      "id": 13,
+      "id": 15,
       "title": "延遲 SLI:<12s 比例 (近 1h)",
       "type": "stat",
       "datasource": {
@@ -219,7 +219,7 @@
       "description": "SLO:95% 的 /chat 在 12 秒內。12 秒來自 Day 12 實測 p95 ≈ 9.75s(Gemini reasoning),不是照搬 3s。"
     },
     {
-      "id": 14,
+      "id": 16,
       "title": "延遲 burn rate (1h)",
       "type": "stat",
       "datasource": {
@@ -281,7 +281,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 17,
       "title": "Firing 中的告警",
       "type": "stat",
       "datasource": {
@@ -339,7 +339,7 @@
       }
     },
     {
-      "id": 16,
+      "id": 18,
       "title": "Burn rate 時間序列(1h 窗)",
       "type": "timeseries",
       "datasource": {
@@ -391,7 +391,7 @@
       "description": "線超過 14.4 的虛線,且 5 分鐘窗也超標 2 分鐘 → 告警。"
     },
     {
-      "id": 17,
+      "id": 19,
       "title": "Token / 小時 vs 基準",
       "type": "timeseries",
       "datasource": {
@@ -841,6 +841,83 @@
       },
       "options": {},
       "description": "HPA 擴到多個 replica 後,流量是否均分。"
+    },
+    {
+      "id": 11,
+      "title": "快取命中率 (近 5m)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cache_requests_total{result=\"hit\"}[5m])) / sum(rate(cache_requests_total{result=~\"hit|miss\"}[5m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "description": "hit / (hit + miss)。新對話的第一輪一定是 miss;對話越長命中率越高。Redis 連不上的 error 不算在內,另列右圖。"
+    },
+    {
+      "id": 12,
+      "title": "快取查詢結果 (req/s)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 40,
+        "w": 18,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(cache_requests_total[1m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "description": "error 出現 = Redis 連不上,系統已降級為直讀 Mongo(變慢但不壞)。"
     }
   ]
 }

@@ -99,6 +99,17 @@ panels.append(panel(
     ['sum by (pod) (rate(http_requests_total{path="/chat"}[1m]))'], 12, 20, 12, 8, unit="reqps", legend=["{{pod}}"],
     desc="HPA 擴到多個 replica 後,流量是否均分。"))
 
+# ---- Day 20:Redis 快取 -------------------------------------------------------
+panels.append(panel(
+    "快取命中率 (近 5m)", "stat",
+    ['sum(rate(cache_requests_total{result="hit"}[5m])) / sum(rate(cache_requests_total{result=~"hit|miss"}[5m]))'],
+    0, 28, 6, 6, unit="percentunit", decimals=1,
+    desc="hit / (hit + miss)。新對話的第一輪一定是 miss;對話越長命中率越高。Redis 連不上的 error 不算在內,另列右圖。"))
+panels.append(panel(
+    "快取查詢結果 (req/s)", "timeseries",
+    ['sum by (result) (rate(cache_requests_total[1m]))'], 6, 28, 18, 6, unit="reqps", legend=["{{result}}"],
+    desc="error 出現 = Redis 連不上,系統已降級為直讀 Mongo(變慢但不壞)。"))
+
 # ---- Day 13:SLO 區塊(放最上面,先看「有沒有守住承諾」)-----------------------
 SLO_H = 12
 for p_ in panels:

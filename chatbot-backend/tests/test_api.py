@@ -41,12 +41,12 @@ def test_conversations_are_isolated(client, stub_llm):
 
 def test_memory_is_capped(client, stub_llm):
     cid = None
-    for i in range(main.MEMORY_MAX_MESSAGES):  # 每輪 +2 則,必然超過上限
+    for i in range(20):  # 每輪 +2 則,必然超過上限
         body = {"user_id": "u", "message": f"m{i}"}
         if cid:
             body["conversation_id"] = cid
         cid = client.post("/chat", json=body).json()["conversation_id"]
-    assert len(main.memory[cid]) == main.MEMORY_MAX_MESSAGES
+    assert len(main.store.get_history(cid)) == 20
 
 
 def test_llm_failure_becomes_502_and_is_not_remembered(client, monkeypatch):
@@ -55,12 +55,16 @@ def test_llm_failure_becomes_502_and_is_not_remembered(client, monkeypatch):
         "/chat", json={"user_id": "u1", "message": "hi", "conversation_id": "c1"}
     )
     assert r.status_code == 502
-    assert "c1" not in main.memory  # 失敗的一輪不能留在記憶裡
+    assert main.store.get_history("c1") == []  # 失敗的一輪不能留在記憶裡
 
 
 def test_mongo_failure_becomes_503(client, stub_llm, monkeypatch):
     class DownStore:
         enabled = True
+        cache_enabled = False
+
+        def get_history(self, cid):
+            return []
 
         def append_turn(self, *a, **k):
             raise main.PyMongoError("down")
@@ -70,10 +74,14 @@ def test_mongo_failure_becomes_503(client, stub_llm, monkeypatch):
         "/chat", json={"user_id": "u1", "message": "hi", "conversation_id": "c1"}
     )
     assert r.status_code == 503
-    assert "c1" not in main.memory  # 沒存進 Mongo 就不能更新記憶體
+    assert r.json()["detail"] == "conversation store unavailable"
 
 
 def test_extract_text_handles_block_lists():
     blocks = [{"type": "text", "text": "a"}, {"type": "thinking"}, "b"]
     assert main.extract_text(blocks) == "ab"
     assert main.extract_text("plain") == "plain"
+
+def test_empty_message(client):
+    r = client.post("/chat", json={"user_id": "u1", "message": ""})
+    print(r.status_code)   # 先看現在的行為
