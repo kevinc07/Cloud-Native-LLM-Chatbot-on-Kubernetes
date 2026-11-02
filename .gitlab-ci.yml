@@ -97,9 +97,11 @@ bump-image-tag:
     - test -n "$CI_PUSH_TOKEN" || { echo "缺少 CI 變數 CI_PUSH_TOKEN,見 .gitlab-ci.yml 註解"; exit 1; }
     - git clone --depth 1 --branch "$CI_DEFAULT_BRANCH" "https://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" release-repo
     - cd release-repo
-    - sed -i "s|^    tag: .*|    tag: ${CI_COMMIT_SHORT_SHA}|" mychart/values.yaml
+    - |
+      sed -i "s|^    tag: .*|    tag: ${CI_COMMIT_SHORT_SHA}|" mychart/values.yaml
     # 防呆:backend 與 frontend 各一行,一共該改到 2 行
-    - test "$(grep -c "^    tag: ${CI_COMMIT_SHORT_SHA}$" mychart/values.yaml)" = 2
+    - |
+      test "$(grep -c "^    tag: ${CI_COMMIT_SHORT_SHA}$" mychart/values.yaml)" = 2
     - git config user.name "gitlab-ci"
     - git config user.email "ci@gitlab.invalid"
     - git commit -am "release ${CI_COMMIT_SHORT_SHA} [skip ci]" || { echo "tag 已是最新,不需 commit"; exit 0; }
