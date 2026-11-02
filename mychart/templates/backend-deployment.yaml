@@ -20,6 +20,9 @@ spec:
         # 沒有它的話,helm upgrade 改了 ConfigMap,舊 Pod 還在用舊值(envFrom 只在啟動時讀一次)。
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      # 預設 K8s 會把「同 namespace 每個 Service」注入成環境變數(例如 Service redis → REDIS_PORT=tcp://10.0.x.x:6379),
+      # 剛好撞上我們自己的 REDIS_PORT 設定。我們用 DNS 名稱找服務,不需要這些變數,關掉最乾淨。
+      enableServiceLinks: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
