@@ -41,8 +41,13 @@ helm-lint:
 
 # ---- build -----------------------------------------------------------------
 # 用 docker-in-docker:在 job 裡再起一個 docker daemon 來 build image。
+#
+# 為什麼指定 arm64 runner:AKS 的 node 是 ARM(B2ps_v2),image 架構必須相同,
+# 否則 Pod 啟動就會 `exec format error`(Day 16 實際踩到)。GitLab 預設 runner 是 amd64,
+# 所以改用它提供的 arm64 runner 原生 build,不需要 QEMU 模擬。
 .docker-build:
   stage: build
+  tags: [saas-linux-small-arm64]
   image: docker:27
   services:
     - docker:27-dind
