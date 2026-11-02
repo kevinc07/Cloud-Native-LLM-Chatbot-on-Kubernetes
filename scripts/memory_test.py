@@ -36,5 +36,5 @@ for i in range(1, ROUNDS + 1):
     bad = seen != expected
     lost += bad
     print(f"{i:>4}  {expected:>8}  {seen:>4}  {pod}{'   <-- 記憶不一致!' if bad else ''}")
-    expected += 2   # 每輪成功後,這段對話累積 user+bot 兩則
+    expected = min(expected + 2, 20)   # 每輪 +2,但 context 只保留最近 20 則(上限)
 print(f"\n{lost}/{ROUNDS} 輪看到的歷史跟預期不同(conversation_id={cid})")

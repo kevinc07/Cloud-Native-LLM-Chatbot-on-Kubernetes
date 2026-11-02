@@ -48,7 +48,7 @@ secretName: chatbot-secret
 # backend 的自動擴縮。啟用後 replicaCount 不再生效,副本數由 HPA 決定。
 hpa:
   enabled: true
-  minReplicas: 3
+  minReplicas: 1
   maxReplicas: 5
   targetCPUUtilizationPercentage: 50
 
@@ -122,7 +122,7 @@ slo:
 
 # Day 13:假 LLM(測試替身),只用於演練/負載測試,不打 Gemini、不耗額度。正式環境務必關閉。
 fakeLlm:
-  enabled: true
+  enabled: false
   delaySeconds: 0           # 模擬 Gemini 變慢
   errorRate: 0              # 0~1,模擬 429 / 逾時
   inputTokens: 100
