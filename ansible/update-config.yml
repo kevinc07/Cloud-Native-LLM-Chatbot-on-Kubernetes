@@ -1,0 +1,64 @@
+# Day 18:用 Ansible 更新 chatbot 的 ConfigMap 設定(走 GitOps)。
+#
+# 為什麼不直接 kubectl apply ConfigMap?因為 ArgoCD 開了 selfHeal,cluster 裡手動改的東西
+# 會被改回 git 的樣子。所以正確的路是:改 git → ArgoCD 部署。
+# 這個 playbook 就是「改 git」那一段的自動化,取代手動編輯 YAML 的重複工作:
+#   1. 驗證輸入(溫度範圍、model 名稱、CORS 網址格式),擋掉打錯字
+#   2. 只改 values.yaml 的 config: 區塊(用 --diff 看到底改了什麼)
+#   3. helm lint + helm template 確認 chart 還能渲染
+#   4. 選用:commit + push(-e push=true),之後 ArgoCD 自動部署,Pod 因 checksum 自動重啟
+#
+#   ansible-playbook update-config.yml --check --diff           # 只預覽,不寫檔
+#   ansible-playbook update-config.yml -e @vars/dev.yml        # 寫檔
+#   ansible-playbook update-config.yml -e push=true            # 寫檔 + commit + push
+- name: Update chatbot config in Helm values
+  hosts: local
+  gather_facts: false
+  vars_files:
+    - vars/dev.yml
+  vars:
+    repo_root: "{{ playbook_dir }}/.."
+    values_file: "{{ repo_root }}/mychart/values.yaml"
+    push: false
+  tasks:
+    - name: validate inputs
+      ansible.builtin.assert:
+        that:
+          - chatbot_config.geminiModel | length > 0
+          - chatbot_config.temperature | float >= 0
+          - chatbot_config.temperature | float <= 2
+          - chatbot_config.corsOrigins is match('^https?://')
+        fail_msg: "設定值不合法,沒有寫任何東西"
+
+    # 每個 key 一個 task;regexp 只比對 config: 區塊底下的縮排行,值沒變就不會動檔案(冪等)。
+    - name: set config values
+      ansible.builtin.lineinfile:
+        path: "{{ values_file }}"
+        regexp: '^  {{ item.key }}:'
+        line: '  {{ item.key }}: "{{ item.value }}"'
+      loop: "{{ chatbot_config | dict2items }}"
+      register: edit
+
+    - name: helm lint
+      ansible.builtin.command: helm lint {{ repo_root }}/mychart
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: helm template renders
+      ansible.builtin.command: helm template chatbot {{ repo_root }}/mychart
+      changed_when: false
+      register: rendered
+      when: not ansible_check_mode
+
+    - name: show rendered ConfigMap values
+      ansible.builtin.debug:
+        msg: "{{ rendered.stdout | regex_search('(?s)name: chatbot-config.*?MONGO_HOST') }}"
+      when: not ansible_check_mode
+
+    - name: commit and push (GitOps takes over from here)
+      ansible.builtin.shell: |
+        git add mychart/values.yaml
+        git commit -m "config: update chatbot ConfigMap via ansible" && git push gitlab main && git push origin main
+      args:
+        chdir: "{{ repo_root }}"
+      when: push | bool and edit.changed and not ansible_check_mode

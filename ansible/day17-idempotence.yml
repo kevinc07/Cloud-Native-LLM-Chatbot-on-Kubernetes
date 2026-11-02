@@ -1,0 +1,42 @@
+# Day 17:冪等性(idempotent)示範。
+# 冪等 = 同一份 playbook 跑 1 次或 10 次,結果一樣;已經是目標狀態就不再動它。
+# 跑第一次會看到 changed,第二次全部 ok(changed=0)。
+#
+#   ansible-playbook day17-idempotence.yml     # 第一次
+#   ansible-playbook day17-idempotence.yml     # 第二次:changed=0
+- name: Idempotence demo
+  hosts: local
+  gather_facts: false
+  vars:
+    demo_dir: /tmp/ansible-demo
+  tasks:
+    # 宣告「目錄要存在」,不是「執行 mkdir」。已存在就什麼都不做。
+    - name: directory exists
+      ansible.builtin.file:
+        path: "{{ demo_dir }}"
+        state: directory
+        mode: "0755"
+
+    # 宣告「檔案內容要是這樣」。內容一樣就不改。
+    - name: config file has desired content
+      ansible.builtin.copy:
+        dest: "{{ demo_dir }}/app.conf"
+        content: |
+          model=gemini-3.6-flash
+          temperature=0.6
+        mode: "0644"
+
+    # 宣告「這一行要存在」。已經有就不再加。
+    # (用另一個檔案:跟上一個 task 管同一個檔案的話,兩個 task 會互相覆蓋,永遠不穩定。)
+    - name: a single line is present
+      ansible.builtin.lineinfile:
+        path: "{{ demo_dir }}/extra.conf"
+        line: "log_level=info"
+        create: true
+        mode: "0644"
+
+    # 反面教材:shell 只是「執行指令」,Ansible 不知道結果算不算改動,每次都回報 changed,
+    # 而且每跑一次就多一行。要用 shell 時應加 creates=/changed_when 來補上冪等性。
+    - name: NOT idempotent (anti-example)
+      ansible.builtin.shell: echo "run" >> {{ demo_dir }}/runs.log
+      changed_when: true

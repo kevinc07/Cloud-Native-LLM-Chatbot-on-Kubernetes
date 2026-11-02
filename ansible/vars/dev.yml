@@ -1,0 +1,5 @@
+# 這份就是「要的設定」。改這裡 → 跑 playbook → 自動寫進 chart 的 values.yaml → git → ArgoCD 部署。
+chatbot_config:
+  geminiModel: "gemini-3.6-flash"
+  temperature: "0.3"
+  corsOrigins: "http://chatbot.local"
