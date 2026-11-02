@@ -1,4 +1,5 @@
-# GitLab CI pipeline:  test  →  build  (只有 main 分支才會 build 並推 image)
+# GitLab CI pipeline:  test  →  build  →  release
+#   (build / release 只有 main 分支才會跑)
 #
 # 「測試失敗就擋住發版」靠的是 stages 的順序:同一個 pipeline 裡,
 # 前一個 stage 只要有任何 job 失敗,後面的 stage 就不會執行 → image 不會被建出來。
@@ -9,6 +10,7 @@
 stages:
   - test
   - build
+  - release
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -76,3 +78,30 @@ build-frontend:
     - docker build --cache-from "$IMAGE:latest" -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" chatbot-frontend
     - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
     - docker push "$IMAGE:latest"
+
+# ---- release ---------------------------------------------------------------
+# GitOps 的最後一哩:CI 不碰 cluster,只負責把「剛建好的 image tag」寫回 git 的 values.yaml。
+# 接著 ArgoCD 偵測到 git 變了,自己把新版本部署上去。
+#
+# 要先在 GitLab 專案設 CI 變數 CI_PUSH_TOKEN(專案 access token,Maintainer、write_repository,勾 Masked)。
+# commit 訊息帶 [skip ci]:這個 commit 只改 tag,不該再觸發一輪 pipeline(否則會無限循環)。
+# 因為 test、build 兩個 stage 都綠了才會跑到這裡,測試失敗的版本永遠不會被寫進 values.yaml。
+bump-image-tag:
+  stage: release
+  image:
+    name: alpine/git:2.45.2
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - test -n "$CI_PUSH_TOKEN" || { echo "缺少 CI 變數 CI_PUSH_TOKEN,見 .gitlab-ci.yml 註解"; exit 1; }
+    - git clone --depth 1 --branch "$CI_DEFAULT_BRANCH" "https://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" release-repo
+    - cd release-repo
+    - sed -i "s|^    tag: .*|    tag: ${CI_COMMIT_SHORT_SHA}|" mychart/values.yaml
+    # 防呆:backend 與 frontend 各一行,一共該改到 2 行
+    - test "$(grep -c "^    tag: ${CI_COMMIT_SHORT_SHA}$" mychart/values.yaml)" = 2
+    - git config user.name "gitlab-ci"
+    - git config user.email "ci@gitlab.invalid"
+    - git commit -am "release ${CI_COMMIT_SHORT_SHA} [skip ci]" || { echo "tag 已是最新,不需 commit"; exit 0; }
+    # 兩次 pipeline 同時結束時 push 可能被擋(non-fast-forward),重新 rebase 再推
+    - git push origin "HEAD:${CI_DEFAULT_BRANCH}" || { git pull --rebase origin "${CI_DEFAULT_BRANCH}" && git push origin "HEAD:${CI_DEFAULT_BRANCH}"; }
