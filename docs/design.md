@@ -1,79 +1,78 @@
-# 設計取捨與已知限制
+# Design Trade-offs and Known Limitations
 
-## 一、設計取捨(為什麼這樣選)
+## Part 1 — Trade-offs (why it is built this way)
 
-### 1. 對話記憶:Mongo 當真相、Redis 當快取,不用 LangGraph checkpointer
-- **問題**:最初記憶放各 pod 的記憶體,HPA 擴到多個 replica 後歷史時有時無([day9-memory-bug.md](day9-memory-bug.md))。
-- **選擇**:Mongo 為唯一 source of truth;Redis cache-aside 只降低讀取延遲。Redis 丟了可由 Mongo 重建,所以 Redis 不開持久化、設 `maxmemory` + LRU + TTL。
-- **為什麼不用 LangGraph checkpointer**:這個服務只有「送最近 N 則歷史給模型」一種需求,沒有分支、人工介入、工具迴圈。引進 checkpointer 會多一層狀態格式與遷移成本,卻換不到功能。
-- **為什麼不用 Gemini Interactions API(伺服器端保存對話)**:狀態放在供應商那邊,換模型就丟記憶、無法自己做保留期與刪除,也讓 Mongo 不再是唯一真相。
-- **寫入順序**:先 Mongo、後 Redis。Mongo 失敗就回 503、快取不動——寧可使用者重送,也不要「看到回覆但紀錄沒存」。
-- **送給模型的永遠是最近 N 則(預設 20)**,不論快取命中與否,所以快取只影響延遲、不影響答案。
+### 1. Conversation memory: MongoDB as source of truth, Redis as cache (no LangGraph checkpointer)
+- **Problem:** History first lived in each pod's memory. Once the HPA scaled to several replicas, history appeared and disappeared depending on which pod answered ([day9-memory-bug.md](day9-memory-bug.md)).
+- **Choice:** MongoDB is the single source of truth. Redis is a cache-aside layer that only reduces read latency. Redis can be rebuilt from MongoDB, so it runs without persistence, with `maxmemory`, LRU eviction and a TTL.
+- **Why not a LangGraph checkpointer:** The service needs exactly one thing: send the last N messages to the model. There is no branching, no human-in-the-loop and no tool loop. A checkpointer would add a state format and migration cost without adding a feature.
+- **Why not server-side conversation state from the model vendor:** The state would live with the provider. Switching models would lose memory, we could not control retention or deletion, and MongoDB would stop being the single source of truth.
+- **Write order:** MongoDB first, then Redis. If MongoDB fails the request returns 503 and the cache is untouched. A user retrying is better than a user seeing an answer that was never saved.
+- **The model always receives the last N messages (default 20)**, whether the cache hits or not. The cache changes latency, never the answer.
 
-### 2. 三層「快取/節流」各管一件事
-| 層 | 目的 |
+### 2. Three layers, each with one job
+| Layer | Purpose |
 |---|---|
-| Redis cache-aside | 降低讀取歷史的延遲與 Mongo 負載 |
-| 歷史截斷(N 則)+ `max_output_tokens` | 限制單次請求成本的上限 |
-| Gemini implicit caching(只觀測) | 長 prompt 才會命中(門檻數千 token),短對話通常為 0;只量測、不優化 |
+| Redis cache-aside | Lower history-read latency and MongoDB load |
+| History truncation (N messages) + `max_output_tokens` | Put an upper bound on the cost of a single request |
+| Gemini implicit caching (observed only) | Only hits on long prompts (thousands of tokens), so it is usually 0 for short chats. Measured, not optimised. |
 
-### 3. GitOps:CI 不碰 cluster,只改 git
-- CI 只負責把「剛建好的 image SHA tag」寫回 `values.yaml`,部署由 ArgoCD 拉取。CI 不需要 cluster 憑證,攻擊面小。
-- **用 SHA tag 而非 `latest`**:ArgoCD 只看 git,tag 不變就沒東西可部署;SHA 也能追溯是哪個 commit、回滾就是 revert 一個 commit。
-- **release commit 帶 `[skip ci]`**:否則改 tag 的 commit 會再觸發 pipeline,無限循環。
-- **擋住壞版本靠 stage 順序**:test 失敗 → build/release 不執行 → 沒有新 tag → ArgoCD 沒東西可部署。實測見 [e2e-results.md](e2e-results.md)。
-- **開 selfHeal**:手動改 cluster 會被改回 git 的樣子,所以 Ansible 改的是 git 而不是 cluster。
+### 3. GitOps: CI never touches the cluster
+- CI only writes the freshly built image SHA tag back to `values.yaml`. ArgoCD pulls the change and deploys it. CI holds no cluster credentials, which shrinks the attack surface.
+- **SHA tags instead of `latest`:** ArgoCD only watches git, so an unchanged tag means nothing to deploy. A SHA tag also traces back to an exact commit, and a rollback is a single `git revert`.
+- **Release commits carry `[skip ci]`.** Otherwise the tag-bump commit would trigger another pipeline, forever.
+- **Bad builds are blocked by stage order:** a failing test means build and release never run, so no new tag is written and ArgoCD has nothing to deploy. Measured in [e2e-results.md](e2e-results.md).
+- **selfHeal is on:** manual cluster edits are reverted to match git, so the Ansible playbook edits git, not the cluster.
 
-### 4. SLO 數字來自量測,不照搬
-`/chat` 延遲 SLO 是 12 秒而不是常見的 3 秒:實測 p95 ≈ 9.75 秒(Gemini reasoning 佔大宗)。照搬 3 秒只會讓告警永遠響。`/health` 不呼叫 LLM,才訂 200ms。詳見 [SLO.md](SLO.md)。
+### 4. SLO targets come from measurements
+The `/chat` latency SLO is 12 s, not the common 3 s. Measured p95 was about 9.75 s, mostly Gemini reasoning time, so a 3 s target would page forever. `/health` does not call the LLM, so it gets a strict 200 ms target. Details in [SLO.md](SLO.md).
 
-### 5. 告警用 burn rate + 雙窗
-固定門檻不隨 SLO 鬆緊改變;burn rate 直接代表「預算還能撐多久」。長窗證明問題夠大、短窗證明還在發生,兩者同時成立才告警。
+### 5. Burn-rate alerts over two windows
+A fixed error-rate threshold ignores how strict the SLO is. Burn rate says directly how fast the error budget is being spent. The long window proves the problem is big enough; the short window proves it is still happening. Both must hold to alert.
 
-### 6. 刻意把 502 與 503 分開
-502 = Gemini 失敗(外部依賴),503 = Mongo 不可用(自己的依賴)。兩者都算進可用性 SLI,但排查路徑不同,指標與日誌可區分。
+### 6. 502 and 503 are deliberately different
+502 means Gemini failed (external dependency). 503 means MongoDB is unavailable (our own dependency). Both count against the availability SLI, but they need different investigations, and metrics and logs keep them apart.
 
-### 7a. 身分與對話:先檢查擁有者,再讀快取
-Redis 只用 `conversation_id` 當 key,若先讀快取就會繞過權限,所以 `/chat` 在讀快取前先向 Mongo 確認擁有者;upsert 的 filter 也帶 `user_id`,兩人同時搶同一個新 id 時,輸的那方被唯一索引擋下(DuplicateKeyError → 404)。代價是每次多一次輕量 Mongo 查詢。
+### 7. Identity check before the cache read
+Redis keys are only the `conversation_id`. Reading the cache first would bypass authorization, so `/chat` asks MongoDB who owns the conversation before touching the cache. The upsert filter also includes `user_id`. If two users race to create the same new id, the loser hits the unique index (`DuplicateKeyError` → 404). The cost is one small indexed MongoDB lookup per request.
 
-### 7. LLM 呼叫:逾時與重試自己管
-SDK 預設重試 6 次、無逾時,出事時會把流量放大 7 倍且看不見。改成 SDK 不重試、自管最多 2 次 + 退避 + 期限,並以 `llm_attempts_total` 觀測放大倍數。演練與數字見 [incident-drill.md](incident-drill.md)。
+### 8. LLM calls: we own the timeout and the retries
+The SDK defaults are 6 retries and no timeout. During an outage that silently multiplies traffic by 7. The SDK retry is now disabled and the service makes at most 2 attempts with backoff and an overall deadline. `llm_attempts_total` makes the amplification visible. Drill and numbers in [incident-drill.md](incident-drill.md).
 
-### 8. 優雅下線要兩個機制一起
-實測部署時出現 502:Pod 被刪時「移出 Endpoints」與「SIGTERM」同時發生,ingress 仍把請求送給正在關閉的 Pod。解法是 readiness probe(避免太早接流量)+ `preStop: sleep 5`(留時間讓 Endpoints 傳播)。修好後連續 3 次部署 0 個非 200。
+### 9. Graceful shutdown needs two mechanisms
+Deploys initially produced 502s. When a pod is deleted, removal from the Service endpoints and SIGTERM happen at the same time, so the ingress kept sending requests to a pod that was shutting down. The fix combines a readiness probe (no traffic before the app listens) with `preStop: sleep 5` (time for the endpoint removal to propagate). After the fix, 3 consecutive deploys had 0 non-200 responses.
 
-## 二、已知限制(誠實列出)
+## Part 2 — Known limitations (stated honestly)
 
-### 發版流程
-- **release 階段有競爭**:兩次 push 靠很近時,兩個 pipeline 的 release 可能交錯,後完成的把 tag 蓋回舊版。對策:GitLab `resource_group` 串行化(尚未做)。
-- **沒有 staging、沒有部署後 smoke test、沒有自動回滾**。ArgoCD 只保證「cluster = git」,不保證應用正確。回滾目前是手動 revert。
-- 無法在本環境直接查看 GitLab pipeline 畫面;驗證靠 release commit 與 cluster 狀態。
+### Release pipeline
+- **The release stage can race.** If two pushes land close together, their release jobs can interleave and the later one may write an older tag. Fix: serialise with GitLab `resource_group` (not done).
+- **No staging, no post-deploy smoke test, no automatic rollback.** ArgoCD guarantees "cluster equals git", not "the app is correct". Rollback today is a manual revert.
+- Pipeline results were verified through the release commit and cluster state, not the GitLab UI.
 
-### 容量與可用性
-- **單節點 AKS(B2ps_v2)**:node CPU requests 已逼近上限,第三個 backend replica 會 Pending——HPA 設 max 5 在這個節點上實際到不了。節點掛了整個服務停擺。
-- **MongoDB、Redis 都是單一實例**:沒有複寫、沒有備份策略。Redis 掛了會降級(變慢但可用);Mongo 掛了 `/chat` 回 503。
-- **Redis 掛掉時每個請求多等約 1 秒**(逾時後才降級直讀 Mongo),沒有 circuit breaker;LLM 重試也只是封住上限(2 倍),同樣沒有 circuit breaker([incident-drill.md](incident-drill.md))。
-- **「停止」只在前端生效**:按停止是瀏覽器中斷等待,後端的 Gemini 呼叫仍會跑完、token 照算,並把回答寫進 Mongo;重新整理後那則被停止的回答會出現(2026-11-03 實測確認)。真正中斷需要後端偵測斷線並取消呼叫、不寫入(尚未做)。新對話的 id 由前端產生,所以停止後再送仍在同一段對話,不會多出看不到的對話。
-- 前端不渲染 Markdown(只處理程式碼區塊),Gemini 回答中的 `**粗體**`、清單符號會原樣顯示。
-- 「+」選單的上傳檔案只是預留 UI:後端不收檔案,附檔時前端會擋下送出並提示,不會默默丟掉檔案。搜尋只在前端依標題過濾(列表最多 50 筆)。
-- 同一段對話的**併發請求沒有加鎖**,極端情況下 Redis 與 Mongo 的順序可能暫時不一致(TTL 到期後自癒)。
+### Capacity and availability
+- **Single-node AKS (B2ps_v2).** Node CPU requests are near the limit, so a third backend replica stays Pending. The HPA max of 5 is not reachable on this node, and losing the node takes the whole service down.
+- **MongoDB and Redis are single instances** with no replication and no backup policy. Losing Redis degrades the service (slower but working). Losing MongoDB makes `/chat` return 503.
+- **During a Redis outage every request waits about 1 s** for the Redis timeout before falling back to MongoDB. There is no circuit breaker. LLM retries are capped at 2x but also have no circuit breaker ([incident-drill.md](incident-drill.md)).
+- **"Stop" only works in the browser.** The browser stops waiting, but the backend Gemini call still finishes, the tokens are still spent, and the answer is still saved to MongoDB. True cancellation would need the backend to detect the disconnect and cancel the call (not done).
+- The frontend does not render Markdown (it only handles code blocks), so Gemini's `**bold**` and list markers show as raw text.
+- File upload in the "+" menu is placeholder UI. The backend does not accept files, so the frontend blocks sending with an attachment instead of silently dropping it. Search filters titles client-side (up to 50 conversations).
+- **Concurrent requests on the same conversation are not locked.** In rare cases Redis and MongoDB ordering can differ briefly; the TTL heals it.
 
-### 安全
-- **沒有真正的使用者驗證**:身分只是使用者自己輸入的名字(`X-User-Id` header),沒有密碼或簽章,任何人輸入別人的名字就能讀到、刪除他的對話。這是刻意的範圍取捨——專案重點是維運,不是認證——只適合 demo。所有 API 只透過 `current_user()` 取得身分,日後換 JWT/OAuth 只需改這一個函式。
-- **擁有者檢查擋得住的範圍**:知道別人的 `conversation_id` 但不知道他的名字,讀、寫、刪都是 404(不洩漏 id 是否存在,也不被 Redis 快取繞過)。擋不住的是冒用名字。
-- 擁有者檢查每次 `/chat` 多一次 Mongo 查詢(`conversation_id` 唯一索引,只取 `user_id` 欄位)。
-- **`/metrics` 已不經 Ingress 對外**(只開放 /chat、/health 與網頁),叢集內仍可被抓取;尚未加 NetworkPolicy 限制叢集內誰能連。
-- **對外是 HTTP**(sslip.io 免費網址,無 TLS);Ingress 限流超限時回 503 而非 429(改要調 ingress-nginx 控制器的全域設定,它不在本 repo)。限流要看得到真實來源 IP,需要把 ingress-nginx Service 設為 `externalTrafficPolicy: Local`——這是叢集層級的手動設定,不在 git 裡。
-- **LangSmith 會收到 prompt 內容**:不適合處理敏感資料,正式環境需要遮罩或關閉。
-- Secret 由人手動 `kubectl create`,沒有 Sealed Secrets / External Secrets 之類的管理。
+### Security
+- **No real authentication.** Identity is a name the user types (`X-User-Id` header), with no password or signature, so anyone who types another person's name can read or delete their conversations. This is a deliberate scope decision: the project is about operations, not auth, and it is demo-only. Every endpoint gets identity only through `current_user()`, so moving to JWT/OAuth means changing that one function.
+- **What the ownership check does stop:** knowing someone's `conversation_id` without their name gives 404 for read, write and delete. It does not leak whether the id exists, and the Redis cache cannot bypass it. It cannot stop name impersonation.
+- **`/metrics` is no longer exposed through the ingress** (only `/chat`, `/conversations`, `/health` and the web UI are). It is still reachable inside the cluster; there is no NetworkPolicy yet.
+- **Public traffic is plain HTTP** (free sslip.io hostname, no TLS). Rate-limited requests get 503 instead of 429 (changing that needs a global ingress-nginx setting outside this repo). Per-IP limits need the real client IP, which requires `externalTrafficPolicy: Local` on the ingress-nginx Service. That is a manual cluster setting, not in git.
+- **LangSmith receives prompt contents**, so this setup is not suitable for sensitive data without masking or disabling tracing.
+- Secrets are created by hand with `kubectl create`; there is no Sealed Secrets or External Secrets.
 
-### 觀測與成本
-- **看不到 30 天 SLO 窗口**:Prometheus 只留 2 天、沒掛 PVC,cluster 重啟歷史就清空。
-- **Alertmanager 沒有接收端**(Slack / PagerDuty / Email)。
-- **成本是 token 估算,不是帳單**;dashboard 的單價是可調的占位值。
-- 成本告警的基準在歷史很短時意義有限,主要靠絕對下限兜底(詳見 SLO.md)。
+### Observability and cost
+- **No 30-day SLO window.** Prometheus keeps 2 days of data with no PVC, and history is lost when the cluster restarts.
+- **Alertmanager has no receiver** (no Slack, PagerDuty or email).
+- **Cost is a token-based estimate, not the bill.** The dashboard prices are adjustable placeholders.
+- The cost-alert baseline means little when history is short, so the alert mostly relies on its absolute floor (see [SLO.md](SLO.md)).
 
-### 測試
-- 單元/整合測試用 fakeredis 與假 collection,**沒有對真 Mongo/Redis 的整合測試**;多 replica 一致性靠 `scripts/memory_test.py` 在 cluster 上驗證,不在 CI 裡。
-- 根目錄 `docker-compose.yml` 是早期本機開發用,沒有 Redis、backend 也沒接 Mongo,不能代表正式堆疊。
-- Gemini 呼叫用假 LLM 取代,真實模型行為(逾時、429)只在手動演練中驗證。
+### Testing
+- Unit and API tests use fakeredis and a fake collection. **There are no integration tests against real MongoDB or Redis.** Multi-replica consistency is verified on the cluster with `scripts/memory_test.py`, not in CI.
+- The root `docker-compose.yml` is an early local setup with no Redis and no MongoDB connection, so it does not represent the real stack.
+- Gemini is replaced by a fake LLM in tests. Real model behaviour (timeouts, 429) was only verified in manual drills.

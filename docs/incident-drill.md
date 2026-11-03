@@ -1,75 +1,79 @@
-# Day 27 故障演練與 Postmortem
+# Incident Drill and Postmortem
 
-兩個演練,都在 AKS 上做(2026-11-02)。用假 LLM(`FakeLLM`)注入故障,**不消耗 Gemini 額度**,所以「token 花費」只能用呼叫次數推估,不是實際帳單。
+Two drills, both run on AKS (2026-11-02). Faults were injected with a fake LLM (`FakeLLM`), so **no Gemini quota was used**.
+That also means "token cost" can only be estimated from call counts, not from a bill.
 
-## 演練 1:LLM 持續出錯 → 重試風暴
+## Drill 1: the LLM keeps failing → retry storm
 
-### 起因(查出來的,不是猜的)
-`langchain-google-genai` 預設 `max_retries=6`、`timeout=None`(直接讀 `model_fields` 確認)。意思是:
-Gemini 出錯時,**每個 `/chat` 會在 SDK 裡悄悄打最多 7 次**;Gemini 卡住時,可能**永遠不逾時**。
-重試本來是擋瞬間抖動,對一個已經不健康的依賴卻是放大流量。而且這些重試不在我們的指標裡,看不見。
+### Cause (found, not guessed)
+`langchain-google-genai` defaults to `max_retries=6` and `timeout=None` (confirmed by reading the client's `model_fields`). So:
+when Gemini errors, **every `/chat` silently makes up to 7 calls inside the SDK**; when Gemini hangs, a call **may never time out**.
+Retries exist to absorb brief blips, but against a dependency that is already unhealthy they multiply traffic. And because they happen inside the SDK, none of them showed up in our metrics.
 
-### 方法
-- 注入:LLM 每次呼叫 3 秒後失敗(`FAKE_LLM_ERROR_RATE=1`,模擬 503)。
-- 負載:6 個並行 client,各自連續送 `/chat`。
-- **A(重現舊行為)**:同一份程式用設定模擬 SDK 預設:最多 7 次、退避 1→10 秒、無期限。注意這是「用設定重現」,不是跑舊版 binary;退避曲線是我假設的,**7 次這個數字**才是來自 SDK 預設。
-- **B(修正後)**:最多 2 次、退避 0.5→4 秒、期限 30 秒、單次逾時 20 秒。
+### Method
+- Fault: every LLM call fails after 3 s (`FAKE_LLM_ERROR_RATE=1`, simulating a 503).
+- Load: 6 concurrent clients, each sending `/chat` back-to-back.
+- **A (old behaviour reproduced):** the same code configured to mimic the SDK defaults: up to 7 attempts, backoff 1 → 10 s, no deadline. This reproduces the behaviour through configuration; it is not the old binary. The backoff curve is my assumption; **the 7 attempts** come from the SDK default.
+- **B (after the fix):** at most 2 attempts, backoff 0.5 → 4 s, 30 s deadline, 20 s per-call timeout.
 
-### 結果
-| | A:SDK 預設行為 | B:有上限的重試 |
+### Results
+| | A: SDK defaults | B: capped retries |
 |---|---|---|
-| 完成的請求 | 30(全部 502) | 114(全部 502) |
-| 每個請求的平均耗時 | **47.7 秒**(最長 52 秒) | **6.5 秒**(最長 6.6 秒) |
-| 每個請求打 LLM 的次數(`llm_attempts_total` ÷ `/chat` 請求) | **7.0** | **2.0** |
-| 告警 | `LLMRetryAmplification`、`ChatAvailabilityFastBurn`、`ChatLatencyFastBurn` 觸發 | —(演練後才換設定,沒有重新等告警) |
+| Completed requests | 30 (all 502) | 114 (all 502) |
+| Average time per request | **47.7 s** (max 52 s) | **6.5 s** (max 6.6 s) |
+| LLM calls per request (`llm_attempts_total` ÷ `/chat` requests) | **7.0** | **2.0** |
+| Alerts | `LLMRetryAmplification`, `ChatAvailabilityFastBurn`, `ChatLatencyFastBurn` fired | — (config switched after the drill; did not wait for alerts again) |
 
-解讀時要小心兩件事:
-1. **看「每個請求的放大倍數」,不要看總呼叫速率。** 我的 client 是「等回應才送下一個」(closed-loop),B 因為請求很快失敗,client 送得更密,所以 B 的總呼叫數(約 2/s)反而比 A(約 1.1/s)高。真實使用者是依自己的節奏到達,不會因為伺服器慢而少來,這時 A 的 7 倍會直接乘在流量上。
-2. B 仍是 2 倍。依賴完全掛掉時,重試仍在加壓,只是上限被封住。更完整的做法是 circuit breaker(連續失敗就暫時不打),**尚未做**。
+Two things to read carefully:
+1. **Look at amplification per request, not the total call rate.** My clients were closed-loop: each waited for a response before sending the next.
+   Because B failed fast, its clients sent more often, so B's total call rate (~2/s) was actually higher than A's (~1.1/s).
+   Real users arrive at their own pace and do not slow down because the server is slow, so A's 7× would multiply real traffic.
+2. **B is still 2×.** When the dependency is fully down, retries still add load; the fix only caps it. A circuit breaker
+   (stop calling for a while after repeated failures) would be the complete answer. **Not done.**
 
-### 另一個情境:上游卡住不回
-注入 30 秒延遲、單次逾時 5 秒:請求 **10.6 秒**就以 502 結束(5 秒 + 0.4 秒退避 + 5 秒),而不是卡 30 秒以上。
-舊預設 `timeout=None` 下沒有這個保護,慢請求會一直佔住 worker 執行緒。
+### Second scenario: the upstream hangs
+With a 30 s injected delay and a 5 s per-call timeout, the request ended with 502 in **10.6 s** (5 s + 0.4 s backoff + 5 s) instead of hanging 30 s or more.
+The old default `timeout=None` has no such protection, so slow calls would keep holding worker threads.
 
-### Timeline(演練中實際觀察到的)
-1. 注入故障、開始負載 → 每個請求要 ~48 秒才失敗。
-2. `LLMRetryAmplification` 因放大倍數 7.0 > 1.5 持續 3 分鐘觸發;可用性/延遲快燒告警同時觸發。
-3. 換成有上限的設定 → 單請求耗時從 48 秒降到 6.5 秒,放大倍數降到 2.0。
+### Timeline (observed during the drill)
+1. Fault injected, load started → each request took ~48 s to fail.
+2. `LLMRetryAmplification` fired after the amplification stayed at 7.0 (> 1.5) for 3 minutes; the availability and latency fast-burn alerts fired too.
+3. Switched to the capped config → time per request fell from 48 s to 6.5 s and amplification to 2.0.
 
-### 根因與修正
-| | 內容 |
+### Root cause and fix
+| | |
 |---|---|
-| 根因 | 依賴 SDK 預設值:重試 6 次、無逾時,且重試對我們不可見 |
-| 修正 | `llm_client.py`:SDK 重試關掉、單次逾時 20 秒;自管重試(最多 2 次、指數退避 + jitter、整體期限 30 秒、429 不重試) |
-| 可觀測 | 新指標 `llm_attempts_total{result}`;新告警 `LLMRetryAmplification`(平均 > 1.5 次/請求,持續 3 分鐘) |
-| 防回歸 | 7 個單元測試(次數上限、退避、期限、429 不重試、指標) |
+| Root cause | Relying on SDK defaults: 6 retries, no timeout, and retries invisible to us |
+| Fix | `llm_client.py`: SDK retries off, 20 s per-call timeout; our own retry policy (max 2 attempts, exponential backoff + jitter, 30 s overall deadline, no retry on 429) |
+| Observability | New metric `llm_attempts_total{result}`; new alert `LLMRetryAmplification` (> 1.5 calls per request for 3 minutes) |
+| Regression guard | 7 unit tests (attempt cap, backoff growth and cap, deadline, no retry on 429, metric counting) |
 
-### 取捨
-- **為什麼 2 次不是 1 次**:擋得住瞬間抖動(單次偶發失敗),又把放大倍數封在 2。1 次最安全但吃不到重試的好處。
-- **為什麼 429 不重試**:免費額度用完時重試只會更快撞牆。
-- **jitter**:多個 replica 在同一時刻失敗時,不會同時重試、同時打回去。
+### Trade-offs
+- **Why 2 attempts, not 1:** it absorbs a single transient failure while capping amplification at 2×. One attempt is safest but gives up the benefit of retrying.
+- **Why no retry on 429:** when the quota is exhausted, retrying only hits the wall faster.
+- **Jitter:** when several replicas fail at the same moment, they do not all retry at the same moment.
 
-## 演練 2:Redis 掛掉
+## Drill 2: Redis goes down
 
-### 方法
-同一段對話連續送 36 輪(LLM 正常、無延遲)。第 11 輪把 Redis `scale` 到 0,第 26 輪恢復。
+### Method
+One conversation, 36 turns in a row (LLM healthy, no delay). At turn 11 Redis was scaled to 0; at turn 26 it was restored.
 
-### 結果
-| 階段 | 結果 | `/chat` 耗時 | 對話歷史 |
+### Results
+| Phase | Result | `/chat` time | Conversation history |
 |---|---|---|---|
-| Redis 正常(1–10 輪) | 200 | ~0.06 秒 | 每輪 +2 |
-| **Redis 掛掉(11–25 輪)** | **全部 200,沒有任何錯誤** | **~1.06 秒** | 維持完整(封頂 20,由 Mongo 提供) |
-| Redis 恢復(26 輪起) | 200 | ~0.06 秒(自動回填快取) | 完整 |
+| Redis up (turns 1–10) | 200 | ~0.06 s | +2 per turn |
+| **Redis down (turns 11–25)** | **all 200, zero errors** | **~1.06 s** | intact (capped at 20, served from MongoDB) |
+| Redis back (turn 26 on) | 200 | ~0.06 s (cache refilled automatically) | intact |
 
-`cache_requests_total{result="error"}` 在掛掉期間上升,dashboard 的快取面板可見。
+`cache_requests_total{result="error"}` rose during the outage and is visible on the dashboard's cache panel.
 
-### 發現的問題
-降級是成功的(服務不中斷、記憶不丟),但**每個請求多花約 1 秒**:每次都要先等 Redis 逾時才改讀 Mongo。
-沒有 circuit breaker,Redis 掛得越久,每個請求都重複付這個代價。對 12 秒的延遲 SLO 影響不大,但流量大時這 1 秒會佔住 worker。
-**未修**:列入已知限制([design.md](design.md))。可能的修法是連續失敗 N 次後短時間內直接跳過 Redis。
+### Problem found
+The degradation worked (no outage, no lost memory), but **every request paid about 1 extra second**, waiting for the Redis timeout before reading MongoDB.
+With no circuit breaker, every request pays that cost again for as long as Redis is down. It barely affects the 12 s latency SLO, but under heavy traffic that second ties up workers.
+**Not fixed**; listed in [design.md](design.md). A likely fix: after N consecutive failures, skip Redis for a short period.
 
-## 演練本身的操作紀錄
-- 為了改 ConfigMap 做演練,暫停了 ArgoCD 的自動同步,結束後恢復。
-- **意外**:恢復後 selfHeal **沒有**把我手動加進 ConfigMap 的 `FAKE_LLM_*` 清掉(ArgoCD 只管 git 裡有的欄位,不管多出來的 key),
-  我是用 `kubectl patch` 明確刪除後重啟 backend 才恢復。確認 `FAKE_LLM=False`。
-  **這是 selfHeal 的真實邊界**:它能把被改掉的值改回去,不保證刪掉被加進去的東西。
+## Notes on running the drill
+- To edit the ConfigMap for the drill, ArgoCD auto-sync was paused and re-enabled afterwards.
+- **Surprise:** after re-enabling, selfHeal did **not** remove the `FAKE_LLM_*` keys I had added by hand. ArgoCD manages the fields that exist in git and ignores extra keys.
+  I deleted them explicitly with `kubectl patch`, restarted the backend, and confirmed `FAKE_LLM=False`.
+  **This is a real limit of selfHeal:** it reverts changed values, but it does not guarantee that added fields are removed.

@@ -1,0 +1,79 @@
+# 設計取捨與已知限制
+
+## 一、設計取捨(為什麼這樣選)
+
+### 1. 對話記憶:Mongo 當真相、Redis 當快取,不用 LangGraph checkpointer
+- **問題**:最初記憶放各 pod 的記憶體,HPA 擴到多個 replica 後歷史時有時無([day9-memory-bug.md](day9-memory-bug.md))。
+- **選擇**:Mongo 為唯一 source of truth;Redis cache-aside 只降低讀取延遲。Redis 丟了可由 Mongo 重建,所以 Redis 不開持久化、設 `maxmemory` + LRU + TTL。
+- **為什麼不用 LangGraph checkpointer**:這個服務只有「送最近 N 則歷史給模型」一種需求,沒有分支、人工介入、工具迴圈。引進 checkpointer 會多一層狀態格式與遷移成本,卻換不到功能。
+- **為什麼不用 Gemini Interactions API(伺服器端保存對話)**:狀態放在供應商那邊,換模型就丟記憶、無法自己做保留期與刪除,也讓 Mongo 不再是唯一真相。
+- **寫入順序**:先 Mongo、後 Redis。Mongo 失敗就回 503、快取不動——寧可使用者重送,也不要「看到回覆但紀錄沒存」。
+- **送給模型的永遠是最近 N 則(預設 20)**,不論快取命中與否,所以快取只影響延遲、不影響答案。
+
+### 2. 三層「快取/節流」各管一件事
+| 層 | 目的 |
+|---|---|
+| Redis cache-aside | 降低讀取歷史的延遲與 Mongo 負載 |
+| 歷史截斷(N 則)+ `max_output_tokens` | 限制單次請求成本的上限 |
+| Gemini implicit caching(只觀測) | 長 prompt 才會命中(門檻數千 token),短對話通常為 0;只量測、不優化 |
+
+### 3. GitOps:CI 不碰 cluster,只改 git
+- CI 只負責把「剛建好的 image SHA tag」寫回 `values.yaml`,部署由 ArgoCD 拉取。CI 不需要 cluster 憑證,攻擊面小。
+- **用 SHA tag 而非 `latest`**:ArgoCD 只看 git,tag 不變就沒東西可部署;SHA 也能追溯是哪個 commit、回滾就是 revert 一個 commit。
+- **release commit 帶 `[skip ci]`**:否則改 tag 的 commit 會再觸發 pipeline,無限循環。
+- **擋住壞版本靠 stage 順序**:test 失敗 → build/release 不執行 → 沒有新 tag → ArgoCD 沒東西可部署。實測見 [e2e-results.md](e2e-results.md)。
+- **開 selfHeal**:手動改 cluster 會被改回 git 的樣子,所以 Ansible 改的是 git 而不是 cluster。
+
+### 4. SLO 數字來自量測,不照搬
+`/chat` 延遲 SLO 是 12 秒而不是常見的 3 秒:實測 p95 ≈ 9.75 秒(Gemini reasoning 佔大宗)。照搬 3 秒只會讓告警永遠響。`/health` 不呼叫 LLM,才訂 200ms。詳見 [SLO.md](SLO.md)。
+
+### 5. 告警用 burn rate + 雙窗
+固定門檻不隨 SLO 鬆緊改變;burn rate 直接代表「預算還能撐多久」。長窗證明問題夠大、短窗證明還在發生,兩者同時成立才告警。
+
+### 6. 刻意把 502 與 503 分開
+502 = Gemini 失敗(外部依賴),503 = Mongo 不可用(自己的依賴)。兩者都算進可用性 SLI,但排查路徑不同,指標與日誌可區分。
+
+### 7a. 身分與對話:先檢查擁有者,再讀快取
+Redis 只用 `conversation_id` 當 key,若先讀快取就會繞過權限,所以 `/chat` 在讀快取前先向 Mongo 確認擁有者;upsert 的 filter 也帶 `user_id`,兩人同時搶同一個新 id 時,輸的那方被唯一索引擋下(DuplicateKeyError → 404)。代價是每次多一次輕量 Mongo 查詢。
+
+### 7. LLM 呼叫:逾時與重試自己管
+SDK 預設重試 6 次、無逾時,出事時會把流量放大 7 倍且看不見。改成 SDK 不重試、自管最多 2 次 + 退避 + 期限,並以 `llm_attempts_total` 觀測放大倍數。演練與數字見 [incident-drill.md](incident-drill.md)。
+
+### 8. 優雅下線要兩個機制一起
+實測部署時出現 502:Pod 被刪時「移出 Endpoints」與「SIGTERM」同時發生,ingress 仍把請求送給正在關閉的 Pod。解法是 readiness probe(避免太早接流量)+ `preStop: sleep 5`(留時間讓 Endpoints 傳播)。修好後連續 3 次部署 0 個非 200。
+
+## 二、已知限制(誠實列出)
+
+### 發版流程
+- **release 階段有競爭**:兩次 push 靠很近時,兩個 pipeline 的 release 可能交錯,後完成的把 tag 蓋回舊版。對策:GitLab `resource_group` 串行化(尚未做)。
+- **沒有 staging、沒有部署後 smoke test、沒有自動回滾**。ArgoCD 只保證「cluster = git」,不保證應用正確。回滾目前是手動 revert。
+- 無法在本環境直接查看 GitLab pipeline 畫面;驗證靠 release commit 與 cluster 狀態。
+
+### 容量與可用性
+- **單節點 AKS(B2ps_v2)**:node CPU requests 已逼近上限,第三個 backend replica 會 Pending——HPA 設 max 5 在這個節點上實際到不了。節點掛了整個服務停擺。
+- **MongoDB、Redis 都是單一實例**:沒有複寫、沒有備份策略。Redis 掛了會降級(變慢但可用);Mongo 掛了 `/chat` 回 503。
+- **Redis 掛掉時每個請求多等約 1 秒**(逾時後才降級直讀 Mongo),沒有 circuit breaker;LLM 重試也只是封住上限(2 倍),同樣沒有 circuit breaker([incident-drill.md](incident-drill.md))。
+- **「停止」只在前端生效**:按停止是瀏覽器中斷等待,後端的 Gemini 呼叫仍會跑完、token 照算,並把回答寫進 Mongo;重新整理後那則被停止的回答會出現(2026-11-03 實測確認)。真正中斷需要後端偵測斷線並取消呼叫、不寫入(尚未做)。新對話的 id 由前端產生,所以停止後再送仍在同一段對話,不會多出看不到的對話。
+- 前端不渲染 Markdown(只處理程式碼區塊),Gemini 回答中的 `**粗體**`、清單符號會原樣顯示。
+- 「+」選單的上傳檔案只是預留 UI:後端不收檔案,附檔時前端會擋下送出並提示,不會默默丟掉檔案。搜尋只在前端依標題過濾(列表最多 50 筆)。
+- 同一段對話的**併發請求沒有加鎖**,極端情況下 Redis 與 Mongo 的順序可能暫時不一致(TTL 到期後自癒)。
+
+### 安全
+- **沒有真正的使用者驗證**:身分只是使用者自己輸入的名字(`X-User-Id` header),沒有密碼或簽章,任何人輸入別人的名字就能讀到、刪除他的對話。這是刻意的範圍取捨——專案重點是維運,不是認證——只適合 demo。所有 API 只透過 `current_user()` 取得身分,日後換 JWT/OAuth 只需改這一個函式。
+- **擁有者檢查擋得住的範圍**:知道別人的 `conversation_id` 但不知道他的名字,讀、寫、刪都是 404(不洩漏 id 是否存在,也不被 Redis 快取繞過)。擋不住的是冒用名字。
+- 擁有者檢查每次 `/chat` 多一次 Mongo 查詢(`conversation_id` 唯一索引,只取 `user_id` 欄位)。
+- **`/metrics` 已不經 Ingress 對外**(只開放 /chat、/health 與網頁),叢集內仍可被抓取;尚未加 NetworkPolicy 限制叢集內誰能連。
+- **對外是 HTTP**(sslip.io 免費網址,無 TLS);Ingress 限流超限時回 503 而非 429(改要調 ingress-nginx 控制器的全域設定,它不在本 repo)。限流要看得到真實來源 IP,需要把 ingress-nginx Service 設為 `externalTrafficPolicy: Local`——這是叢集層級的手動設定,不在 git 裡。
+- **LangSmith 會收到 prompt 內容**:不適合處理敏感資料,正式環境需要遮罩或關閉。
+- Secret 由人手動 `kubectl create`,沒有 Sealed Secrets / External Secrets 之類的管理。
+
+### 觀測與成本
+- **看不到 30 天 SLO 窗口**:Prometheus 只留 2 天、沒掛 PVC,cluster 重啟歷史就清空。
+- **Alertmanager 沒有接收端**(Slack / PagerDuty / Email)。
+- **成本是 token 估算,不是帳單**;dashboard 的單價是可調的占位值。
+- 成本告警的基準在歷史很短時意義有限,主要靠絕對下限兜底(詳見 SLO.md)。
+
+### 測試
+- 單元/整合測試用 fakeredis 與假 collection,**沒有對真 Mongo/Redis 的整合測試**;多 replica 一致性靠 `scripts/memory_test.py` 在 cluster 上驗證,不在 CI 裡。
+- 根目錄 `docker-compose.yml` 是早期本機開發用,沒有 Redis、backend 也沒接 Mongo,不能代表正式堆疊。
+- Gemini 呼叫用假 LLM 取代,真實模型行為(逾時、429)只在手動演練中驗證。

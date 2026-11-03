@@ -81,8 +81,8 @@ spec:
             severity: page
             slo: chat-availability
           annotations:
-            summary: "/chat 成功率 error budget 正在快速燃燒"
-            description: {{ printf "/chat 的 5xx 比例在 1 小時與 5 分鐘窗都超過 SLO 預算的 %v 倍(SLO %v)。" $fast $chat.availabilityTarget | quote }}
+            summary: "/chat availability error budget is burning fast"
+            description: {{ printf "/chat 5xx ratio exceeds %vx the error budget over both the 1h and 5m windows (SLO %v)." $fast $chat.availabilityTarget | quote }}
 
         # 成功率:慢燒(ticket)——問題不大但持續,積少成多會花光預算
         - alert: ChatAvailabilitySlowBurn
@@ -95,7 +95,7 @@ spec:
             severity: ticket
             slo: chat-availability
           annotations:
-            summary: "/chat 成功率 error budget 正在緩慢燃燒"
+            summary: "/chat availability error budget is burning slowly"
 
         # 延遲:快燒
         - alert: ChatLatencyFastBurn
@@ -108,8 +108,8 @@ spec:
             severity: page
             slo: chat-latency
           annotations:
-            summary: "/chat 延遲 error budget 正在快速燃燒"
-            description: {{ printf "超過 %s 秒的 /chat 請求比例,在 1 小時與 5 分鐘窗都超過 SLO 預算的 %v 倍(SLO %v)。" $chat.latencyThreshold $fast $chat.latencyTarget | quote }}
+            summary: "/chat latency error budget is burning fast"
+            description: {{ printf "Share of /chat requests slower than %ss exceeds %vx the error budget over both the 1h and 5m windows (SLO %v)." $chat.latencyThreshold $fast $chat.latencyTarget | quote }}
 
         # 延遲:慢燒
         - alert: ChatLatencySlowBurn
@@ -122,7 +122,7 @@ spec:
             severity: ticket
             slo: chat-latency
           annotations:
-            summary: "/chat 延遲 error budget 正在緩慢燃燒"
+            summary: "/chat latency error budget is burning slowly"
 
         # 成本護欄(跟延遲 SLO 分開管理):抓無限重試、濫用、context 意外暴增。
         # 條件 = 近 1 小時用量 > max(N × 基準, 絕對下限)。clamp_min 實作「取較大者」。
@@ -135,8 +135,8 @@ spec:
             severity: ticket
             slo: llm-cost
           annotations:
-            summary: "LLM token 用量異常飆高"
-            description: {{ printf "近 1 小時 token 用量超過基準的 %v 倍(且高於絕對下限 %v)。常見原因:重試風暴、被濫用、對話歷史意外變長。" .Values.slo.cost.spikeMultiplier .Values.slo.cost.minTokensPerHour | quote }}
+            summary: "LLM token usage spike"
+            description: {{ printf "Tokens used in the last hour exceed %vx the baseline (and the absolute floor of %v). Common causes: retry storm, abuse, unexpectedly long history." .Values.slo.cost.spikeMultiplier .Values.slo.cost.minTokensPerHour | quote }}
 
         # 重試放大:每個 /chat 平均打了幾次 LLM。正常 ≈ 1;外部依賴不健康時重試會把流量放大(retry storm)。
         # 分母用 /chat 的總請求;流量太低時不告警,避免幾個請求就失真。
@@ -150,6 +150,6 @@ spec:
             severity: page
             slo: llm-retry
           annotations:
-            summary: "LLM 重試放大倍數過高(疑似 retry storm)"
-            description: {{ printf "每個 /chat 平均呼叫 LLM 超過 %v 次,持續 3 分鐘。檢查 Gemini 是否變慢/出錯,以及 llm.maxAttempts 設定。" .Values.slo.retry.amplificationThreshold | quote }}
+            summary: "LLM retry amplification is high (possible retry storm)"
+            description: {{ printf "Each /chat makes more than %v LLM calls on average, for 3 minutes. Check whether Gemini is slow or failing, and the llm.maxAttempts setting." .Values.slo.retry.amplificationThreshold | quote }}
 {{- end }}

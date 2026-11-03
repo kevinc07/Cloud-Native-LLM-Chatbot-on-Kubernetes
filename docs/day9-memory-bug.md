@@ -1,29 +1,32 @@
-# Day 9 證據:多 replica 下記憶體版對話記憶不一致
+# Evidence: in-memory conversation history breaks with multiple replicas
 
-環境:AKS,backend 由 HPA 從 1 個擴到 5 個 pod(2026-10-29)。
+Environment: AKS, backend scaled by the HPA from 1 to 5 pods (2026-10-29).
 
-## HPA 擴容事件
+## HPA scale-up events
 ```
-  Normal   SuccessfulRescale             3m6s                  horizontal-pod-autoscaler  New size: 4; reason: cpu resource utilization (percentage of request) above target
-  Normal   SuccessfulRescale             2m51s                 horizontal-pod-autoscaler  New size: 5; reason: cpu resource utilization (percentage of request) above target
+  Normal   SuccessfulRescale   3m6s    horizontal-pod-autoscaler  New size: 4; reason: cpu resource utilization (percentage of request) above target
+  Normal   SuccessfulRescale   2m51s   horizontal-pod-autoscaler  New size: 5; reason: cpu resource utilization (percentage of request) above target
 ```
 
-## 同一段對話連打 10 輪(scripts/memory_test.py)
-expected = 這段對話應累積的歷史則數;seen = 該 pod 實際看到的則數。
+## One conversation, 10 turns (`scripts/memory_test.py`)
+`expected` = how many history messages the conversation should have; `seen` = how many the answering pod actually had.
 ```
 turn  expected  seen  pod
    1         0     0  chatbot-backend-85b9cd7487-hr97s
-   2         2     0  chatbot-backend-85b9cd7487-wcq6c   <-- 記憶不一致!
-   3         4     0  chatbot-backend-85b9cd7487-gvgkh   <-- 記憶不一致!
-   4         6     0  chatbot-backend-85b9cd7487-k4lbk   <-- 記憶不一致!
-   5         8     2  chatbot-backend-85b9cd7487-hr97s   <-- 記憶不一致!
-   6        10     2  chatbot-backend-85b9cd7487-gvgkh   <-- 記憶不一致!
-   7        12     0  chatbot-backend-85b9cd7487-7lj8m   <-- 記憶不一致!
-   8        14     2  chatbot-backend-85b9cd7487-wcq6c   <-- 記憶不一致!
-   9        16     2  chatbot-backend-85b9cd7487-k4lbk   <-- 記憶不一致!
-  10        18     2  chatbot-backend-85b9cd7487-7lj8m   <-- 記憶不一致!
+   2         2     0  chatbot-backend-85b9cd7487-wcq6c   <-- inconsistent
+   3         4     0  chatbot-backend-85b9cd7487-gvgkh   <-- inconsistent
+   4         6     0  chatbot-backend-85b9cd7487-k4lbk   <-- inconsistent
+   5         8     2  chatbot-backend-85b9cd7487-hr97s   <-- inconsistent
+   6        10     2  chatbot-backend-85b9cd7487-gvgkh   <-- inconsistent
+   7        12     0  chatbot-backend-85b9cd7487-7lj8m   <-- inconsistent
+   8        14     2  chatbot-backend-85b9cd7487-wcq6c   <-- inconsistent
+   9        16     2  chatbot-backend-85b9cd7487-k4lbk   <-- inconsistent
+  10        18     2  chatbot-backend-85b9cd7487-7lj8m   <-- inconsistent
 ```
 
-結論:每輪被 Ingress 分到不同 pod,而對話記憶存在各 pod 自己的記憶體,所以歷史時有時無。Mongo 其實有完整紀錄,但目前只寫不讀。Day 20 改成 Mongo + Redis cache-aside 修復。
+Conclusion: the ingress sent each turn to a different pod, and history lived in each pod's own memory, so it came and went.
+MongoDB had the full record, but the code only wrote to it and never read from it. The fix was MongoDB as the source of truth
+plus a Redis cache-aside layer; after it, `X-History-Len` grows by 2 every turn no matter which pod answers.
 
-備註:第 11 輪起 Gemini 免費額度(20 requests)用完,回 429,後端目前把它當 500 回傳。
+Note: from turn 11 the Gemini free-tier quota (20 requests) ran out and returned 429, which the backend then surfaced as 500.
+(It now returns 502 for LLM failures and does not retry 429.)

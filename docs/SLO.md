@@ -1,69 +1,69 @@
-# SLO 文件
+# Service Level Objectives
 
-## 名詞
+## Terms
 
-| 名詞 | 意思 | 例子 |
+| Term | Meaning | Example |
 |---|---|---|
-| **SLI**(Service Level Indicator) | 實際量到的數字 | 「過去 1 小時 /chat 有 0.4% 的請求失敗」 |
-| **SLO**(Service Level Objective) | 對自己訂的目標 | 「99% 的 /chat 請求要成功」 |
-| **Error budget** | 允許失敗的額度 = 1 − SLO | 99% → 1% |
-| **Burn rate** | 預算消耗速度 = 實際失敗率 ÷ error budget | 1 = 剛好在窗口結束時花完;14.4 = 快 14.4 倍 |
+| **SLI** (Service Level Indicator) | What we actually measure | "0.4% of `/chat` requests failed in the last hour" |
+| **SLO** (Service Level Objective) | The target we set for ourselves | "99% of `/chat` requests succeed" |
+| **Error budget** | Allowed failure = 1 − SLO | 99% → 1% |
+| **Burn rate** | How fast the budget is spent = observed error rate ÷ error budget | 1 = budget runs out exactly at the end of the window; 14.4 = 14.4× faster |
 
-SLA 是對客戶的合約承諾(違反要賠錢);SLO 是內部目標,通常比 SLA 嚴。本專案只有 SLO。
+An SLA is a contractual promise to customers with penalties. An SLO is an internal target, usually stricter. This project only has SLOs.
 
-## 本專案的 SLO
+## The SLOs
 
-| 服務 | SLI | SLO | Error budget |
+| Service | SLI | SLO | Error budget |
 |---|---|---|---|
-| `/chat` 成功率 | 非 5xx 的請求比例 | **99%** | 1% |
-| `/chat` 延遲 | 在 **12 秒**內完成的請求比例 | **95%** | 5% |
-| `/health` 延遲 | 在 **200ms** 內完成的請求比例 | **99%** | 1% |
-| LLM 成本(護欄,非 SLO) | 近 1 小時 token 用量 | < max(3 × 基準, 20,000)(基準=中位數) | — |
+| `/chat` availability | Share of requests that are not 5xx | **99%** | 1% |
+| `/chat` latency | Share of requests finished within **12 s** | **95%** | 5% |
+| `/health` latency | Share of requests finished within **200 ms** | **99%** | 1% |
+| LLM cost (guardrail, not an SLO) | Tokens used in the last hour | < max(3 × baseline, 20,000), baseline = median | — |
 
-### 為什麼 `/chat` 是 12 秒,不是 3 秒
+### Why 12 seconds for `/chat`, not 3
 
-`/chat` 要呼叫外部 Gemini,大部分時間花在模型端。Day 12 實測 `gemini-3.6-flash`(預設 `medium` 思考量)
-的 `/chat` **p95 ≈ 9.75 秒**,其中 Gemini 呼叫 ≈ 7.85 秒;回覆只有幾十字,但 output token 約 290–430,
-其中 reasoning(思考)佔 270–390。所以「95% < 3 秒」這種數字在這個模型設定下根本達不到,
-照搬只會讓告警永遠響。SLO 應該建立在**量測**上:先量、再訂。
+`/chat` calls Gemini, and most of the time is spent in the model. Measured with `gemini-3.6-flash` at the default
+`medium` thinking level: **p95 ≈ 9.75 s** for `/chat`, of which the Gemini call was ≈ 7.85 s. Replies were only a few dozen
+words, but output tokens were 290–430, of which 270–390 were reasoning tokens. A "95% under 3 s" target cannot be met with
+this model configuration and would only produce an alert that never stops. SLOs should come from measurements: measure first, then set the target.
 
-`/health` 不呼叫 LLM,才適合 200ms 這種嚴格標準。兩者分開訂比較誠實。
+`/health` does not call the LLM, so a strict 200 ms target makes sense there. Setting them separately is more honest.
 
-> 之後若把 `thinking_level` 調成 `low`/`minimal`,應重新量測並收緊 `/chat` 的延遲 SLO。
-> 門檻改變時,`values.yaml` 的 `slo.chat.latencyThreshold` 必須同步成 histogram 的 bucket 邊界(見 `metrics.py`)。
+> If `thinking_level` is lowered to `low`/`minimal`, re-measure and tighten the `/chat` latency SLO.
+> When the threshold changes, `slo.chat.latencyThreshold` in `values.yaml` must match a histogram bucket boundary (see `metrics.py`).
 
-## 告警設計:多時間窗 burn-rate
+## Alerting: multi-window burn rate
 
-| 告警 | 條件(長窗 AND 短窗同時成立) | 持續 | 等級 |
+| Alert | Condition (long window AND short window) | For | Severity |
 |---|---|---|---|
-| `ChatAvailabilityFastBurn` / `ChatLatencyFastBurn` | burn rate > **14.4**(1h 窗 AND 5m 窗) | 2m | page |
-| `ChatAvailabilitySlowBurn` / `ChatLatencySlowBurn` | burn rate > **6**(6h 窗 AND 30m 窗) | 15m | ticket |
-| `LLMRetryAmplification` | 平均每個 /chat 呼叫 LLM > 1.5 次(5m 窗) | 3m | page |
-| `LLMTokenUsageSpike` | 近 1h token > max(3 × 前 23h 中位數, 20,000) | 5m | ticket |
+| `ChatAvailabilityFastBurn` / `ChatLatencyFastBurn` | burn rate > **14.4** (1h AND 5m) | 2m | page |
+| `ChatAvailabilitySlowBurn` / `ChatLatencySlowBurn` | burn rate > **6** (6h AND 30m) | 15m | ticket |
+| `LLMRetryAmplification` | average LLM calls per `/chat` > 1.5 (5m window) | 3m | page |
+| `LLMTokenUsageSpike` | tokens in last 1h > max(3 × median of the previous 23h, 20,000) | 5m | ticket |
 
-- **為什麼是 burn rate,不是「失敗率 > X%」?** 固定門檻不管 SLO 鬆緊;burn rate 直接對應「預算還能撐多久」,
-  SLO 改了告警自動跟著改。
-- **為什麼要兩個窗?** 只看短窗會被瞬間抖動誤報;只看長窗發現得慢、恢復後還會繼續響。
-  「長窗證明問題夠大,短窗證明它現在還在發生」。
-- **14.4 與 6 哪來的?** Google SRE Workbook 的建議值:14.4× 持續 1 小時 = 燒掉 30 天預算的 2%;6× 持續 6 小時 = 5%。
-- **流量過低的保護:** 1 小時內請求數 < 10 不告警(3 個請求錯 1 個 = 33%,是雜訊不是訊號)。
-- **成本告警的基準:前 23 小時每小時用量的「中位數」,且排除最近 1 小時。**
-  排除最近 1 小時:否則突波會把自己的基準墊高、蓋住自己。
-  用中位數而非平均:突波滑出最近 1 小時後會進入「前 23 小時」,平均值會被單一突波墊高約 23 小時
-  (實測:一次約 65 萬 token 的突波讓告警門檻從 2 萬升到 8.5 萬),期間第二次暴增可能不告警;中位數對極端值不敏感。
-  沒有歷史資料時基準為 0,由絕對下限(20,000 token/h)兜底。
+- **Why burn rate instead of "error rate > X%"?** A fixed threshold ignores how strict the SLO is. Burn rate maps directly to
+  "how long until the budget is gone", and the alerts follow automatically when the SLO changes.
+- **Why two windows?** A short window alone pages on brief blips. A long window alone detects slowly and keeps firing after recovery.
+  The long window proves the problem is large; the short window proves it is still happening.
+- **Where do 14.4 and 6 come from?** The Google SRE Workbook: 14.4× for 1 hour burns 2% of a 30-day budget; 6× for 6 hours burns 5%.
+- **Low-traffic guard:** no alert when there were fewer than 10 requests in the hour (1 failure in 3 requests is 33%, which is noise).
+- **Cost-alert baseline: the median hourly usage of the previous 23 hours, excluding the most recent hour.**
+  Excluding the last hour stops a spike from raising its own baseline and hiding itself.
+  The median rather than the mean: once a spike leaves the last hour it enters the 23-hour window, and a mean would stay inflated for
+  about 23 hours. In one measurement a single ~650k-token spike raised the threshold from 20k to 85k, so a second spike in that period might not alert.
+  The median is insensitive to outliers. With no history the baseline is 0 and the absolute floor (20,000 tokens/h) takes over.
 
-規則定義:[`mychart/templates/prometheusrule.yaml`](../mychart/templates/prometheusrule.yaml);
-所有門檻集中在 [`mychart/values.yaml`](../mychart/values.yaml) 的 `slo:`。
+Rule definitions: [`mychart/templates/prometheusrule.yaml`](../mychart/templates/prometheusrule.yaml).
+All thresholds live under `slo:` in [`mychart/values.yaml`](../mychart/values.yaml).
 
-## 已知限制(誠實列出)
+## Known limitations
 
-- **看不到 30 天窗口。** Prometheus 資料只留 2 天且沒掛硬碟,所以只能做 burn-rate(短窗),
-  無法顯示「30 天 error budget 還剩多少」。正式環境要加長保留(或 Thanos / Mimir)並掛 PVC。
-- **Alertmanager 沒有接收端。** 告警會在 Prometheus / Alertmanager UI 看到,但沒有串 Slack / PagerDuty / Email。
-- **延遲 SLI 包含快速失敗。** 5xx 的請求通常很快就回,會被算進「快」的那邊;成功率與延遲是兩條獨立的 SLI,各自守各自的預算。
-- **成本基準需要足夠的正常歷史才有意義。** 基準取前 23 小時的中位數;歷史很短、或剛好被一次突波填滿時,
-  中位數也會被突波主宰(實測:演練後約 2 小時歷史,基準變成約 64 萬,門檻升到約 190 萬,反而比平均更鈍)。
-  Prometheus 沒掛硬碟、只留 2 天,每次 cluster 重啟歷史就清空,所以這條告警在演練環境裡主要靠絕對下限(20,000 token/h)運作。
-  正式環境的對策:掛 PVC 與較長保留期,並可再加一個基準上限。
-- **成本是 token 估算,不是實際帳單。**
+- **No 30-day view.** Prometheus keeps only 2 days of data and has no disk, so the project uses burn-rate alerts (short windows)
+  and cannot show "how much of the 30-day budget is left". Production would need longer retention (or Thanos / Mimir) and a PVC.
+- **Alertmanager has no receiver.** Alerts are visible in the Prometheus / Alertmanager UI but are not routed to Slack, PagerDuty or email.
+- **The latency SLI includes fast failures.** 5xx responses are usually quick and count as "fast". Availability and latency are independent SLIs, each with its own budget.
+- **The cost baseline needs enough normal history.** With very short history, or history filled by one spike, the median is dominated by the spike too
+  (measured: about 2 hours after a drill the baseline was ~640k and the threshold ~1.9M, worse than the mean). Since Prometheus has no disk and
+  loses history on every cluster restart, in this environment the alert mostly works through its absolute floor (20,000 tokens/h).
+  Production fix: a PVC, longer retention, and possibly a cap on the baseline.
+- **Cost is a token-based estimate, not the actual bill.**
