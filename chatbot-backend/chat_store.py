@@ -252,7 +252,7 @@ class ChatHistoryStore:
         if not doc:
             return None
         msgs = [
-            {"role": m["role"], "content": m["content"], "ts": m["ts"].isoformat() if m.get("ts") else None}
+            {"role": m["role"], "content": m["content"], "ts": _iso(m.get("ts"))}
             for m in doc.get("messages", [])
         ]
         title = doc.get("title") or _make_title(msgs[0]["content"] if msgs else "")
@@ -310,6 +310,15 @@ def _make_title(text: str) -> str:
     return text if len(text) <= TITLE_MAX_CHARS else text[:TITLE_MAX_CHARS] + "…"
 
 
+def _iso(ts) -> Optional[str]:
+    """PyMongo 預設讀回「不帶時區」的 UTC 時間;直接輸出會讓瀏覽器當成本地時間,相對時間(「2 小時前」)會錯。
+    所以一律補上 UTC 再輸出(結尾是 +00:00)。"""
+    if not ts:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.isoformat()
+
+
 def _public(row: dict) -> dict:
-    ts = row.get("updated_at")
-    return {"id": row["id"], "title": row["title"], "updated_at": ts.isoformat() if ts else None}
+    return {"id": row["id"], "title": row["title"], "updated_at": _iso(row.get("updated_at"))}

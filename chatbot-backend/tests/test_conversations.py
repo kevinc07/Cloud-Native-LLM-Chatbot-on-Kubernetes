@@ -154,3 +154,19 @@ def test_mongo_failure_on_list_is_503(client, mongo_store):
     store, col = mongo_store
     store._col = type("Down", (), {"find": lambda *a, **k: (_ for _ in ()).throw(main.PyMongoError("down"))})()
     assert client.get("/conversations", headers=alice()).status_code == 503
+
+
+def test_timestamps_are_utc_aware_even_if_mongo_returns_naive(client, mongo_store):
+    """PyMongo 讀回的 datetime 沒有時區;API 必須補上,否則瀏覽器會把 UTC 當本地時間。"""
+    from datetime import datetime
+    store, col = mongo_store
+    cid = say(client, alice(), "tz").json()["conversation_id"]
+    doc = col.docs[cid]
+    doc["updated_at"] = doc["updated_at"].replace(tzinfo=None)
+    for m in doc["messages"]:
+        m["ts"] = m["ts"].replace(tzinfo=None)
+    listed = client.get("/conversations", headers=alice()).json()["conversations"][0]["updated_at"]
+    full = client.get(f"/conversations/{cid}", headers=alice()).json()["messages"][0]["ts"]
+    for value in (listed, full):
+        assert datetime.fromisoformat(value).utcoffset().total_seconds() == 0
+        assert value.endswith("+00:00")
