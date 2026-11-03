@@ -4,32 +4,8 @@ import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from chat_store import KEY_PREFIX, ChatHistoryStore
+from conftest import FakeCol
 from metrics import CACHE_REQUESTS
-
-
-class FakeCol:
-    """只實作 store 用到的 update_one(upsert + $push)與 find_one($slice)。"""
-
-    def __init__(self):
-        self.docs = {}
-        self.fail = False
-
-    def create_index(self, *a, **k):
-        pass
-
-    def update_one(self, flt, update, upsert=False):
-        if self.fail:
-            raise RuntimeError("mongo down")
-        cid = flt["conversation_id"]
-        doc = self.docs.setdefault(cid, {"conversation_id": cid, "messages": []})
-        doc["messages"] += update["$push"]["messages"]["$each"]
-
-    def find_one(self, flt, proj):
-        doc = self.docs.get(flt["conversation_id"])
-        if not doc:
-            return None
-        n = proj["messages"]["$slice"]
-        return {"messages": doc["messages"][n:]}
 
 
 @pytest.fixture

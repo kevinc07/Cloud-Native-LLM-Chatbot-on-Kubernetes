@@ -63,6 +63,9 @@ def test_mongo_failure_becomes_503(client, stub_llm, monkeypatch):
         enabled = True
         cache_enabled = False
 
+        def get_owner(self, cid):
+            return None
+
         def get_history(self, cid):
             return []
 

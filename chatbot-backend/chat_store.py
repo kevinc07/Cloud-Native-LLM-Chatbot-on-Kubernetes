@@ -17,17 +17,19 @@ main.py 只呼叫這裡的 get_history / append_turn,不直接碰 pymongo 或 re
 import json
 import os
 from datetime import datetime, timezone
+from typing import Optional
 from urllib.parse import quote_plus
 
-from pymongo import ASCENDING, MongoClient
-from pymongo.errors import PyMongoError
+from pymongo import ASCENDING, DESCENDING, MongoClient
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from redis.exceptions import RedisError
 
 from metrics import CACHE_REQUESTS
 
-__all__ = ["ChatHistoryStore", "PyMongoError"]
+__all__ = ["ChatHistoryStore", "PyMongoError", "DuplicateKeyError"]
 
 KEY_PREFIX = "chat:"
+TITLE_MAX_CHARS = 30
 
 
 class ChatHistoryStore:
@@ -39,6 +41,7 @@ class ChatHistoryStore:
         self._max = max_messages
         self._index_ready = False
         self._local: dict[str, list[dict]] = {}
+        self._local_meta: dict[str, dict] = {}  # 無 Mongo 時:cid → {user_id, title, updated_at}
 
     @property
     def enabled(self) -> bool:
@@ -95,6 +98,8 @@ class ChatHistoryStore:
             return
         try:
             self._col.create_index([("conversation_id", ASCENDING)], unique=True)
+            # 「列出某使用者的對話,最近更新的在前」用的索引
+            self._col.create_index([("user_id", ASCENDING), ("updated_at", DESCENDING)])
             self._index_ready = True
         except PyMongoError as e:
             print(f"[mongo] create_index failed, will retry: {e}", flush=True)
@@ -156,15 +161,25 @@ class ChatHistoryStore:
                 {"role": "assistant", "content": bot_text},
             ]
             del hist[: -self._max]
+            now = datetime.now(timezone.utc)
+            meta = self._local_meta.setdefault(
+                conversation_id,
+                {"user_id": user_id, "title": _make_title(user_text), "created_at": now},
+            )
+            meta["updated_at"] = now
             return
 
         self.ensure_index()
         now = datetime.now(timezone.utc)
+        # filter 同時帶 user_id:對話已存在但屬於別人時,upsert 會變成「插入」並撞上
+        # conversation_id 的唯一索引 → DuplicateKeyError,呼叫端回 404。這是擁有者檢查的最後一道原子防線
+        # (main.py 先用 get_owner 擋掉絕大多數情況,這裡處理兩人同時搶同一個新 id 的競態)。
         self._col.update_one(
-            {"conversation_id": conversation_id},
+            {"conversation_id": conversation_id, "user_id": user_id},
             {
                 "$setOnInsert": {
-                    "user_id": user_id,
+                    "title": _make_title(user_text),
+                    "created_at": now,
                     "summary": None,
                     "summarized_up_to": 0,
                 },
@@ -182,6 +197,85 @@ class ChatHistoryStore:
         )
         if self._redis is not None:
             self._update_cache(conversation_id, user_text, bot_text)
+
+    # ---- 對話列表 / 擁有者(Day 28:一個使用者多段對話)-------------------------
+    def get_owner(self, conversation_id: str) -> Optional[str]:
+        """這段對話屬於誰;不存在回 None。Mongo 失敗會丟 PyMongoError。"""
+        if not self.enabled:
+            meta = self._local_meta.get(conversation_id)
+            return meta["user_id"] if meta else None
+        doc = self._col.find_one({"conversation_id": conversation_id}, {"_id": 0, "user_id": 1})
+        return doc.get("user_id") if doc else None
+
+    def list_conversations(self, user_id: str, limit: int = 50) -> list[dict]:
+        """某使用者的對話,最近更新的在前。標題缺(舊資料)就取第一則訊息。"""
+        if not self.enabled:
+            rows = [
+                {"id": cid, "title": m["title"], "updated_at": m["updated_at"]}
+                for cid, m in self._local_meta.items()
+                if m["user_id"] == user_id
+            ]
+            rows.sort(key=lambda r: r["updated_at"], reverse=True)
+            return [_public(r) for r in rows[:limit]]
+        cur = (
+            self._col.find(
+                {"user_id": user_id},
+                {"_id": 0, "conversation_id": 1, "title": 1, "updated_at": 1, "messages": {"$slice": 1}},
+            )
+            .sort("updated_at", DESCENDING)
+            .limit(limit)
+        )
+        rows = []
+        for d in cur:
+            first = (d.get("messages") or [{}])[0].get("content", "")
+            rows.append(
+                {
+                    "id": d["conversation_id"],
+                    "title": d.get("title") or _make_title(first),
+                    "updated_at": d.get("updated_at"),
+                }
+            )
+        return [_public(r) for r in rows]
+
+    def get_conversation(self, conversation_id: str, user_id: str) -> Optional[dict]:
+        """完整訊息(不受 N 則上限限制,給畫面顯示用)。不存在或不是這個使用者的 → None。"""
+        if not self.enabled:
+            meta = self._local_meta.get(conversation_id)
+            if not meta or meta["user_id"] != user_id:
+                return None
+            msgs = list(self._local.get(conversation_id, []))
+            return {"id": conversation_id, "title": meta["title"], "messages": msgs}
+        doc = self._col.find_one(
+            {"conversation_id": conversation_id, "user_id": user_id},
+            {"_id": 0, "title": 1, "messages": 1},
+        )
+        if not doc:
+            return None
+        msgs = [
+            {"role": m["role"], "content": m["content"], "ts": m["ts"].isoformat() if m.get("ts") else None}
+            for m in doc.get("messages", [])
+        ]
+        title = doc.get("title") or _make_title(msgs[0]["content"] if msgs else "")
+        return {"id": conversation_id, "title": title, "messages": msgs}
+
+    def delete_conversation(self, conversation_id: str, user_id: str) -> bool:
+        """刪除對話(Mongo 為準,再清快取)。不存在或不是這個使用者的 → False。"""
+        if not self.enabled:
+            meta = self._local_meta.get(conversation_id)
+            if not meta or meta["user_id"] != user_id:
+                return False
+            self._local_meta.pop(conversation_id, None)
+            self._local.pop(conversation_id, None)
+            return True
+        res = self._col.delete_one({"conversation_id": conversation_id, "user_id": user_id})
+        if res.deleted_count == 0:
+            return False
+        if self._redis is not None:
+            try:
+                self._redis.delete(KEY_PREFIX + conversation_id)
+            except RedisError as e:
+                print(f"[redis] delete failed (TTL will expire it): {e}", flush=True)
+        return True
 
     def _update_cache(self, conversation_id: str, user_text: str, bot_text: str) -> None:
         key = KEY_PREFIX + conversation_id
@@ -207,3 +301,15 @@ class ChatHistoryStore:
                 self._redis.delete(key)
             except RedisError:
                 pass  # 連 DEL 都失敗:交給 TTL 兜底
+
+
+def _make_title(text: str) -> str:
+    text = " ".join((text or "").split())
+    if not text:
+        return "新對話"
+    return text if len(text) <= TITLE_MAX_CHARS else text[:TITLE_MAX_CHARS] + "…"
+
+
+def _public(row: dict) -> dict:
+    ts = row.get("updated_at")
+    return {"id": row["id"], "title": row["title"], "updated_at": ts.isoformat() if ts else None}

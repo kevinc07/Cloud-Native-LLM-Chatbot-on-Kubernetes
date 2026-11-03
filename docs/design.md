@@ -33,6 +33,9 @@
 ### 6. 刻意把 502 與 503 分開
 502 = Gemini 失敗(外部依賴),503 = Mongo 不可用(自己的依賴)。兩者都算進可用性 SLI,但排查路徑不同,指標與日誌可區分。
 
+### 7a. 身分與對話:先檢查擁有者,再讀快取
+Redis 只用 `conversation_id` 當 key,若先讀快取就會繞過權限,所以 `/chat` 在讀快取前先向 Mongo 確認擁有者;upsert 的 filter 也帶 `user_id`,兩人同時搶同一個新 id 時,輸的那方被唯一索引擋下(DuplicateKeyError → 404)。代價是每次多一次輕量 Mongo 查詢。
+
 ### 7. LLM 呼叫:逾時與重試自己管
 SDK 預設重試 6 次、無逾時,出事時會把流量放大 7 倍且看不見。改成 SDK 不重試、自管最多 2 次 + 退避 + 期限,並以 `llm_attempts_total` 觀測放大倍數。演練與數字見 [incident-drill.md](incident-drill.md)。
 
@@ -53,7 +56,9 @@ SDK 預設重試 6 次、無逾時,出事時會把流量放大 7 倍且看不見
 - 同一段對話的**併發請求沒有加鎖**,極端情況下 Redis 與 Mongo 的順序可能暫時不一致(TTL 到期後自癒)。
 
 ### 安全
-- **沒有真正的使用者驗證**:`user_id` 由前端送來、後端直接信任,任何人可冒用。
+- **沒有真正的使用者驗證**:身分只是使用者自己輸入的名字(`X-User-Id` header),沒有密碼或簽章,任何人輸入別人的名字就能讀到、刪除他的對話。這是刻意的範圍取捨——專案重點是維運,不是認證——只適合 demo。所有 API 只透過 `current_user()` 取得身分,日後換 JWT/OAuth 只需改這一個函式。
+- **擁有者檢查擋得住的範圍**:知道別人的 `conversation_id` 但不知道他的名字,讀、寫、刪都是 404(不洩漏 id 是否存在,也不被 Redis 快取繞過)。擋不住的是冒用名字。
+- 擁有者檢查每次 `/chat` 多一次 Mongo 查詢(`conversation_id` 唯一索引,只取 `user_id` 欄位)。
 - **`/metrics` 已不經 Ingress 對外**(只開放 /chat、/health 與網頁),叢集內仍可被抓取;尚未加 NetworkPolicy 限制叢集內誰能連。
 - **對外是 HTTP**(sslip.io 免費網址,無 TLS);Ingress 限流超限時回 503 而非 429(改要調 ingress-nginx 控制器的全域設定,它不在本 repo)。限流要看得到真實來源 IP,需要把 ingress-nginx Service 設為 `externalTrafficPolicy: Local`——這是叢集層級的手動設定,不在 git 裡。
 - **LangSmith 會收到 prompt 內容**:不適合處理敏感資料,正式環境需要遮罩或關閉。

@@ -1,5 +1,5 @@
 # 對外只有一個網址(ingress.host),用「路徑」分流:
-#   /chat、/health → backend      其他(/)→ frontend
+#   /chat、/conversations、/health → backend      其他(/)→ frontend
 # /metrics 沒有列在這裡,所以從外面打會是 404;Prometheus 在叢集內直接連 backend Service,不經過 Ingress。
 # 前端和 API 同一個網址(同源),所以瀏覽器不會觸發 CORS,前端也不用把 API 網址烤進 image。
 #
@@ -42,6 +42,13 @@ spec:
         paths:
           - pathType: Prefix
             path: /chat
+            backend:
+              service:
+                name: chatbot-backend
+                port:
+                  number: {{ .Values.backend.service.port }}
+          - pathType: Prefix
+            path: /conversations
             backend:
               service:
                 name: chatbot-backend

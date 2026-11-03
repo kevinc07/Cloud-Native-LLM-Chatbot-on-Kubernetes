@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage
 
 import main
 from chat_store import ChatHistoryStore
+from pymongo.errors import DuplicateKeyError
 
 
 class StubLLM:
@@ -35,6 +36,72 @@ class StubLLM:
                 "input_token_details": {"cache_read": 0},
             },
         )
+
+
+class FakeCol:
+    """store 用到的 Mongo collection 子集:upsert(含 conversation_id 唯一索引)、find_one、find().sort().limit()、delete_one。"""
+
+    def __init__(self):
+        self.docs = {}
+        self.fail = False
+
+    def create_index(self, *a, **k):
+        pass
+
+    def update_one(self, flt, update, upsert=False):
+        if self.fail:
+            raise RuntimeError("mongo down")
+        cid = flt["conversation_id"]
+        doc = self.docs.get(cid)
+        if doc is not None and "user_id" in flt and doc.get("user_id") != flt["user_id"]:
+            raise DuplicateKeyError("E11000 duplicate key")  # 真的 Mongo 在 upsert 變插入時的行為
+        if doc is None:
+            doc = {"conversation_id": cid, "messages": []}
+            if "user_id" in flt:
+                doc["user_id"] = flt["user_id"]
+            doc.update(update.get("$setOnInsert", {}))
+            self.docs[cid] = doc
+        doc["messages"] += update["$push"]["messages"]["$each"]
+        doc.update(update.get("$set", {}))
+
+    @staticmethod
+    def _match(doc, flt):
+        return all(doc.get(k) == v for k, v in flt.items())
+
+    @staticmethod
+    def _project(doc, proj):
+        out = dict(doc)
+        n = (proj or {}).get("messages", {})
+        if isinstance(n, dict) and "$slice" in n:
+            k = n["$slice"]
+            out["messages"] = doc["messages"][k:] if k < 0 else doc["messages"][:k]
+        return out
+
+    def find_one(self, flt, proj=None):
+        for doc in self.docs.values():
+            if self._match(doc, flt):
+                return self._project(doc, proj)
+        return None
+
+    def find(self, flt, proj=None):
+        rows = [self._project(d, proj) for d in self.docs.values() if self._match(d, flt)]
+
+        class Cursor(list):
+            def sort(self, key, direction):
+                super().sort(key=lambda d: d.get(key), reverse=direction < 0)
+                return self
+
+            def limit(self, n):
+                return Cursor(self[:n])
+
+        return Cursor(rows)
+
+    def delete_one(self, flt):
+        for cid, doc in list(self.docs.items()):
+            if self._match(doc, flt):
+                del self.docs[cid]
+                return type("R", (), {"deleted_count": 1})()
+        return type("R", (), {"deleted_count": 0})()
 
 
 class BrokenLLM:

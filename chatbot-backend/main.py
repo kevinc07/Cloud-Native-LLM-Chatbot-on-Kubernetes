@@ -1,14 +1,15 @@
 import os
+import re
 import time
 import uuid
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from chat_store import ChatHistoryStore, PyMongoError
+from chat_store import ChatHistoryStore, DuplicateKeyError, PyMongoError
 from llm_client import RetryPolicy, invoke_with_retry
 from metrics import (
     LLM_LATENCY,
@@ -85,7 +86,8 @@ init_series(GEMINI_MODEL)
 
 # --- Schemas ---------------------------------------------------------------
 class ChatRequest(BaseModel):
-    user_id: str
+    # 已棄用:身分改由 X-User-Id header 提供。為了讓舊前端在換版期間還能用,沒帶 header 時才退回用這個欄位。
+    user_id: Optional[str] = None
     message: str
     # 第一輪前端不帶,由後端產生 UUID 回傳;之後前端每輪都要帶回來。
     conversation_id: Optional[str] = None
@@ -95,6 +97,31 @@ class ChatResponse(BaseModel):
     user_id: str
     conversation_id: str
     reply: str
+
+
+# --- 身分 ------------------------------------------------------------------
+# 目前「身分」只是使用者自己輸入的名字(沒有密碼、沒有簽章),任何人輸入別人的名字就能看到他的對話——
+# 這是刻意的範圍取捨(見 docs/design.md)。所有 API 都只透過 current_user() 取得身分,
+# 日後換成 JWT / OAuth 只需要改這一個函式。
+USER_ID_RE = re.compile(r"^[\w.@-]{1,64}$")
+
+
+def current_user(header_value: Optional[str], fallback: Optional[str] = None) -> str:
+    user_id = (header_value or fallback or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="missing X-User-Id")
+    if not USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=422, detail="invalid user id")
+    return user_id
+
+
+def _store_call(fn, *args):
+    """Mongo 失敗統一轉成 503(與 /chat 一致,指標上可和 502 的 LLM 失敗區分)。"""
+    try:
+        return fn(*args)
+    except PyMongoError as e:
+        print(f"[mongo] {getattr(fn, '__name__', 'call')} failed: {e}", flush=True)
+        raise HTTPException(status_code=503, detail="conversation store unavailable")
 
 
 # --- Routes ------------------------------------------------------------
@@ -128,15 +155,18 @@ def extract_text(content) -> str:
     return str(content)
  
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, response: Response):
+def chat(req: ChatRequest, response: Response, x_user_id: Optional[str] = Header(None)):
     from langchain_core.messages import AIMessage, HumanMessage
 
+    user_id = current_user(x_user_id, req.user_id)
     conversation_id = req.conversation_id or uuid.uuid4().hex
-    try:
-        stored = store.get_history(conversation_id)
-    except PyMongoError as e:
-        print(f"[mongo] get_history failed: {e}", flush=True)
-        raise HTTPException(status_code=503, detail="conversation store unavailable")
+    if req.conversation_id:
+        # 擁有者檢查要在讀快取「之前」:快取只用 conversation_id 當 key,先讀會繞過權限。
+        # 不是自己的一律回 404(不是 403),避免洩漏「這個 id 存在」。
+        owner = _store_call(store.get_owner, conversation_id)
+        if owner is not None and owner != user_id:
+            raise HTTPException(status_code=404, detail="conversation not found")
+    stored = _store_call(store.get_history, conversation_id)
     history = [
         (HumanMessage if m["role"] == "user" else AIMessage)(content=m["content"])
         for m in stored
@@ -172,14 +202,39 @@ def chat(req: ChatRequest, response: Response):
     # 寫入順序固定「先寫 Mongo」——它是唯一的 source of truth,成功後才更新 Redis。
     # 寫失敗就回 503、快取不動,避免「使用者看到回覆但紀錄沒存」。
     try:
-        store.append_turn(conversation_id, req.user_id, req.message, reply)
+        store.append_turn(conversation_id, user_id, req.message, reply)
+    except DuplicateKeyError:
+        # 兩人同時搶同一個新 id、輸的那一方
+        raise HTTPException(status_code=404, detail="conversation not found")
     except PyMongoError as e:
         print(f"[mongo] append_turn failed: {e}", flush=True)
         raise HTTPException(status_code=503, detail="conversation store unavailable")
 
-    return ChatResponse(
-        user_id=req.user_id, conversation_id=conversation_id, reply=reply
-    )
+    return ChatResponse(user_id=user_id, conversation_id=conversation_id, reply=reply)
+
+
+@app.get("/conversations")
+def list_conversations(x_user_id: Optional[str] = Header(None)):
+    """這個使用者的對話列表(最近更新在前,最多 50 筆)。"""
+    user_id = current_user(x_user_id)
+    return {"user_id": user_id, "conversations": _store_call(store.list_conversations, user_id)}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str, x_user_id: Optional[str] = Header(None)):
+    user_id = current_user(x_user_id)
+    conv = _store_call(store.get_conversation, conversation_id, user_id)
+    if conv is None:  # 不存在,或不是你的:一律 404
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return conv
+
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, x_user_id: Optional[str] = Header(None)):
+    user_id = current_user(x_user_id)
+    if not _store_call(store.delete_conversation, conversation_id, user_id):
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return {"deleted": True}
 
 
 if __name__ == "__main__":

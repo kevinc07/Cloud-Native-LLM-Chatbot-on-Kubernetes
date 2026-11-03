@@ -75,8 +75,11 @@ def init_series(model: str) -> None:
     預先建立可以兩個問題一起避免。
     """
     for method, path, statuses in (
-        ("POST", "/chat", ("200", "422", "500", "502", "503")),
+        ("POST", "/chat", ("200", "401", "404", "422", "500", "502", "503")),
         ("GET", "/health", ("200",)),
+        ("GET", "/conversations", ("200", "401", "422", "503")),
+        ("GET", "/conversations/{conversation_id}", ("200", "401", "404", "422", "503")),
+        ("DELETE", "/conversations/{conversation_id}", ("200", "401", "404", "422", "503")),
     ):
         for status in statuses:
             HTTP_REQUESTS.labels(method, path, status)
