@@ -43,6 +43,15 @@ config:
   historyMaxMessages: "20"   # 送給 LLM 的歷史上限(則數)
   maxOutputTokens: "2048"    # 限制單次輸出(含 reasoning token),成本控制
 
+# Day 27:呼叫 LLM 的逾時與重試(見 chatbot-backend/llm_client.py)。
+# SDK 預設是 max_retries=6、timeout=None;這裡改成明確且有上限。
+llm:
+  timeoutSeconds: "20"       # 單次呼叫逾時
+  maxAttempts: "2"           # 含第一次;1 = 不重試
+  backoffBaseSeconds: "0.5"  # 第 n 次失敗後等 base × 2^(n-1),上限 cap,再乘 0.5~1 的 jitter
+  backoffCapSeconds: "4"
+  deadlineSeconds: "30"      # 整個 LLM 呼叫(含重試)的期限
+
 secretName: chatbot-secret
 
 # backend 的自動擴縮。啟用後 replicaCount 不再生效,副本數由 HPA 決定。
@@ -114,6 +123,9 @@ slo:
     slow: 6
   # 流量太低時,幾個錯誤就會讓比例失真(3 個請求錯 1 個 = 33%)。1 小時內請求數低於此值不告警。
   minRequestsPerHour: 10
+  # Day 27:平均每個 /chat 打 LLM 的次數,超過就視為重試放大。正常約 1;maxAttempts=2 的上限是 2。
+  retry:
+    amplificationThreshold: 1.5
   # 成本護欄:過去 1 小時 token 用量超過「前 23 小時平均每小時用量」的 N 倍就告警;
   # 另設絕對下限,避免沒有歷史資料(基準=0)時任何一點用量都告警。
   cost:
@@ -127,4 +139,5 @@ fakeLlm:
   errorRate: 0              # 0~1,模擬 429 / 逾時
   inputTokens: 100
   outputTokens: 300         # 調大可模擬 token 暴增
+  timeoutSeconds: 0         # 模擬 SDK 單次逾時;delaySeconds 超過它就等滿這麼久後逾時(0=不逾時)
 

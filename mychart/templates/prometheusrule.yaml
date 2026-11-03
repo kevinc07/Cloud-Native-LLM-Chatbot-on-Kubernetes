@@ -137,4 +137,19 @@ spec:
           annotations:
             summary: "LLM token 用量異常飆高"
             description: {{ printf "近 1 小時 token 用量超過基準的 %v 倍(且高於絕對下限 %v)。常見原因:重試風暴、被濫用、對話歷史意外變長。" .Values.slo.cost.spikeMultiplier .Values.slo.cost.minTokensPerHour | quote }}
+
+        # 重試放大:每個 /chat 平均打了幾次 LLM。正常 ≈ 1;外部依賴不健康時重試會把流量放大(retry storm)。
+        # 分母用 /chat 的總請求;流量太低時不告警,避免幾個請求就失真。
+        - alert: LLMRetryAmplification
+          expr: |
+            sum(rate(llm_attempts_total[5m])) / sum(rate(http_requests_total{path="/chat"}[5m]))
+              > {{ .Values.slo.retry.amplificationThreshold }}
+            and sum(increase(http_requests_total{path="/chat"}[5m])) > 5
+          for: 3m
+          labels:
+            severity: page
+            slo: llm-retry
+          annotations:
+            summary: "LLM 重試放大倍數過高(疑似 retry storm)"
+            description: {{ printf "每個 /chat 平均呼叫 LLM 超過 %v 次,持續 3 分鐘。檢查 Gemini 是否變慢/出錯,以及 llm.maxAttempts 設定。" .Values.slo.retry.amplificationThreshold | quote }}
 {{- end }}

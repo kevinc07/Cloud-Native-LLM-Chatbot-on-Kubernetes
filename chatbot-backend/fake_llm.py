@@ -6,6 +6,7 @@ FAKE_LLM=true 時,main.py 用它取代真的 ChatGoogleGenerativeAI。它跟真�
 可注入的故障(環境變數,預設都是「正常」):
 - FAKE_LLM_DELAY_SECONDS:每次呼叫先 sleep 這麼久(模擬 Gemini 變慢)→ Day 13 延遲告警
 - FAKE_LLM_ERROR_RATE:0~1,以此機率丟例外(模擬 429 / 逾時)→ Day 13 成功率告警、Day 27 演練
+- FAKE_LLM_TIMEOUT_SECONDS:模擬 SDK 的單次逾時;DELAY 超過它就等滿逾時秒數後丟 TimeoutError(0=不逾時)→ Day 27
 - FAKE_LLM_OUTPUT_TOKENS:回報的 output token 數(模擬 token 暴增)→ Day 13 成本護欄告警
 
 這是演練工具,正式環境不應開啟(values.yaml 預設 fakeLlm.enabled=false)。
@@ -18,7 +19,8 @@ from langchain_core.messages import AIMessage
 
 
 class FakeLLM:
-    def __init__(self, delay: float, error_rate: float, input_tokens: int, output_tokens: int):
+    def __init__(self, delay: float, error_rate: float, input_tokens: int, output_tokens: int, timeout: float = 0):
+        self.timeout = timeout
         self.delay = delay
         self.error_rate = error_rate
         self.input_tokens = input_tokens
@@ -31,9 +33,13 @@ class FakeLLM:
             error_rate=float(os.getenv("FAKE_LLM_ERROR_RATE", "0")),
             input_tokens=int(os.getenv("FAKE_LLM_INPUT_TOKENS", "100")),
             output_tokens=int(os.getenv("FAKE_LLM_OUTPUT_TOKENS", "300")),
+            timeout=float(os.getenv("FAKE_LLM_TIMEOUT_SECONDS", "0")),
         )
 
     def invoke(self, messages):
+        if self.timeout > 0 and self.delay > self.timeout:
+            time.sleep(self.timeout)
+            raise TimeoutError(f"injected fault: no response within {self.timeout}s")
         if self.delay > 0:
             time.sleep(self.delay)
         if random.random() < self.error_rate:

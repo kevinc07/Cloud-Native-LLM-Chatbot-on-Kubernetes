@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from chat_store import ChatHistoryStore, PyMongoError
+from llm_client import RetryPolicy, invoke_with_retry
 from metrics import (
     LLM_LATENCY,
     LLM_REQUESTS,
@@ -64,7 +65,13 @@ elif os.getenv("GOOGLE_API_KEY"):
         model=GEMINI_MODEL,
         temperature=TEMPERATURE,
         max_output_tokens=int(os.getenv("MAX_OUTPUT_TOKENS", "2048")),
+        # SDK 預設 max_retries=6、timeout=None:關掉 SDK 重試、設單次逾時,重試改由 llm_client 統一管(見該檔說明)。
+        max_retries=0,
+        timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "20")),
     )
+
+
+retry_policy = RetryPolicy.from_env()
 
 # 啟動時印出設定,讓 kubectl logs -f 看得到(只印非敏感值,key 只印有沒有)
 print(
@@ -148,7 +155,7 @@ def chat(req: ChatRequest, response: Response):
     else:
         start = time.perf_counter()
         try:
-            result = llm.invoke(history + [HumanMessage(content=req.message)])
+            result = invoke_with_retry(llm, history + [HumanMessage(content=req.message)], retry_policy, GEMINI_MODEL)
         except Exception as e:
             # 外部依賴失敗(逾時、429 額度用完…)要被記下來,不能只剩一個 500。
             LLM_REQUESTS.labels(GEMINI_MODEL, "error").inc()

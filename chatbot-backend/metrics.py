@@ -37,6 +37,12 @@ LLM_REQUESTS = Counter(
     "LLM calls by outcome",
     ["model", "status"],  # status: ok | error
 )
+# 每一次「實際打出去」的嘗試(含重試)。attempts ÷ 請求數 = 重試放大倍數,Day 27 的觀測重點。
+LLM_ATTEMPTS = Counter(
+    "llm_attempts_total",
+    "LLM call attempts including retries",
+    ["model", "result"],  # result: ok | error
+)
 LLM_LATENCY = Histogram(
     "llm_request_duration_seconds",
     "LLM call latency",
@@ -77,6 +83,7 @@ def init_series(model: str) -> None:
         HTTP_LATENCY.labels(method, path)
     for status in ("ok", "error"):
         LLM_REQUESTS.labels(model, status)
+        LLM_ATTEMPTS.labels(model, status)
     LLM_LATENCY.labels(model)
     for result in ("hit", "miss", "error"):
         CACHE_REQUESTS.labels(result)

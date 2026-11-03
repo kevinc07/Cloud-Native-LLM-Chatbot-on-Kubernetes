@@ -10,6 +10,11 @@ data:
   MONGO_DB: {{ .Values.mongo.db | quote }}
   HISTORY_MAX_MESSAGES: {{ .Values.config.historyMaxMessages | quote }}
   MAX_OUTPUT_TOKENS: {{ .Values.config.maxOutputTokens | quote }}
+  LLM_TIMEOUT_SECONDS: {{ .Values.llm.timeoutSeconds | quote }}
+  LLM_MAX_ATTEMPTS: {{ .Values.llm.maxAttempts | quote }}
+  LLM_BACKOFF_BASE_SECONDS: {{ .Values.llm.backoffBaseSeconds | quote }}
+  LLM_BACKOFF_CAP_SECONDS: {{ .Values.llm.backoffCapSeconds | quote }}
+  LLM_DEADLINE_SECONDS: {{ .Values.llm.deadlineSeconds | quote }}
 {{- if .Values.redis.enabled }}
   REDIS_HOST: "redis"
   REDIS_TTL_SECONDS: {{ .Values.redis.ttlSeconds | quote }}
@@ -20,4 +25,5 @@ data:
   FAKE_LLM_ERROR_RATE: {{ .Values.fakeLlm.errorRate | quote }}
   FAKE_LLM_INPUT_TOKENS: {{ .Values.fakeLlm.inputTokens | quote }}
   FAKE_LLM_OUTPUT_TOKENS: {{ .Values.fakeLlm.outputTokens | quote }}
+  FAKE_LLM_TIMEOUT_SECONDS: {{ .Values.fakeLlm.timeoutSeconds | quote }}
 {{- end }}
