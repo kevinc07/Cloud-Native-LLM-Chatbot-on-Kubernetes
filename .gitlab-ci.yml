@@ -41,6 +41,20 @@ helm-lint:
     # 真的渲染一次:lint 抓不到的模板錯誤(例如 values 欄位拼錯)在這裡會失敗
     - helm template chatbot mychart > /dev/null
 
+# 前端:型別檢查(tsc)+ Vite 建置。放在 test 階段,所以任何分支 push 都會跑,
+# 前端壞掉在這裡就會被擋下,不用等到 main 的 docker build 才發現。
+frontend-build:
+  stage: test
+  image: node:20-alpine
+  cache:
+    key:
+      files: [chatbot-frontend/package-lock.json]
+    paths: [.cache/npm]
+  script:
+    - cd chatbot-frontend
+    - npm ci --no-audit --no-fund --cache "$CI_PROJECT_DIR/.cache/npm"
+    - npm run build
+
 # ---- build -----------------------------------------------------------------
 # 用 docker-in-docker:在 job 裡再起一個 docker daemon 來 build image。
 #

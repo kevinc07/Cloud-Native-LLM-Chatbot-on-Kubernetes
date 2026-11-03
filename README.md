@@ -54,7 +54,7 @@ GitOps 自動發版、SLO 與告警、無狀態水平擴充、快取降級、可
 | 路徑 | 內容 |
 |---|---|
 | `chatbot-backend/` | FastAPI 服務、`chat_store.py`(Mongo+Redis)、`metrics.py`、`tests/`(21 個測試) |
-| `chatbot-frontend/` | React 前端 + nginx |
+| `chatbot-frontend/` | React 19 + Vite + Tailwind v4 前端(版型由 v0 產生後接上 API)+ nginx |
 | `mychart/` | Helm chart:Deployment、HPA、Redis、Mongo、Ingress、ServiceMonitor、PrometheusRule、Grafana dashboard |
 | `argocd/` | ArgoCD 安裝 values 與 Application |
 | `.gitlab-ci.yml` | test → build → release |
@@ -75,6 +75,12 @@ python -m pytest -v            # 不需要 Gemini key、Mongo、Redis(用 fakere
 ```bash
 # 本機體驗前後端(需要 chatbot-backend/.env,內含 GOOGLE_API_KEY;不要進 git)
 docker compose up --build      # 前端 :3000,後端 :8000
+```
+
+```bash
+# 只開發前端:Vite 把 /chat、/conversations、/health 代理到 VITE_DEV_BACKEND(預設 localhost:8000)
+cd chatbot-frontend && npm install
+VITE_DEV_BACKEND=http://chat.172-184-203-57.sslip.io npm run dev   # 直接連叢集上的後端
 ```
 
 注意:`docker-compose.yml` 是早期的本機開發用,**沒有 Redis,也沒有把 backend 接上 Mongo**,
