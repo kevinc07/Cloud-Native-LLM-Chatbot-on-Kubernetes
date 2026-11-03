@@ -38,6 +38,7 @@ SLA 是對客戶的合約承諾(違反要賠錢);SLO 是內部目標,通常比 S
 |---|---|---|---|
 | `ChatAvailabilityFastBurn` / `ChatLatencyFastBurn` | burn rate > **14.4**(1h 窗 AND 5m 窗) | 2m | page |
 | `ChatAvailabilitySlowBurn` / `ChatLatencySlowBurn` | burn rate > **6**(6h 窗 AND 30m 窗) | 15m | ticket |
+| `LLMRetryAmplification` | 平均每個 /chat 呼叫 LLM > 1.5 次(5m 窗) | 3m | page |
 | `LLMTokenUsageSpike` | 近 1h token > max(3 × 前 23h 中位數, 20,000) | 5m | ticket |
 
 - **為什麼是 burn rate,不是「失敗率 > X%」?** 固定門檻不管 SLO 鬆緊;burn rate 直接對應「預算還能撐多久」,

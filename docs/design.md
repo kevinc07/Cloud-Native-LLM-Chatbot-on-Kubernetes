@@ -33,7 +33,10 @@
 ### 6. 刻意把 502 與 503 分開
 502 = Gemini 失敗(外部依賴),503 = Mongo 不可用(自己的依賴)。兩者都算進可用性 SLI,但排查路徑不同,指標與日誌可區分。
 
-### 7. 優雅下線要兩個機制一起
+### 7. LLM 呼叫:逾時與重試自己管
+SDK 預設重試 6 次、無逾時,出事時會把流量放大 7 倍且看不見。改成 SDK 不重試、自管最多 2 次 + 退避 + 期限,並以 `llm_attempts_total` 觀測放大倍數。演練與數字見 [incident-drill.md](incident-drill.md)。
+
+### 8. 優雅下線要兩個機制一起
 實測部署時出現 502:Pod 被刪時「移出 Endpoints」與「SIGTERM」同時發生,ingress 仍把請求送給正在關閉的 Pod。解法是 readiness probe(避免太早接流量)+ `preStop: sleep 5`(留時間讓 Endpoints 傳播)。修好後連續 3 次部署 0 個非 200。
 
 ## 二、已知限制(誠實列出)
@@ -46,6 +49,7 @@
 ### 容量與可用性
 - **單節點 AKS(B2ps_v2)**:node CPU requests 已逼近上限,第三個 backend replica 會 Pending——HPA 設 max 5 在這個節點上實際到不了。節點掛了整個服務停擺。
 - **MongoDB、Redis 都是單一實例**:沒有複寫、沒有備份策略。Redis 掛了會降級(變慢但可用);Mongo 掛了 `/chat` 回 503。
+- **Redis 掛掉時每個請求多等約 1 秒**(逾時後才降級直讀 Mongo),沒有 circuit breaker;LLM 重試也只是封住上限(2 倍),同樣沒有 circuit breaker([incident-drill.md](incident-drill.md))。
 - 同一段對話的**併發請求沒有加鎖**,極端情況下 Redis 與 Mongo 的順序可能暫時不一致(TTL 到期後自癒)。
 
 ### 安全
