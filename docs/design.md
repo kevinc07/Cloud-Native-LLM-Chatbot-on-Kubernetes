@@ -54,7 +54,8 @@ SDK 預設重試 6 次、無逾時,出事時會把流量放大 7 倍且看不見
 
 ### 安全
 - **沒有真正的使用者驗證**:`user_id` 由前端送來、後端直接信任,任何人可冒用。
-- **`/metrics` 經 ingress 公開可達**,應限制在叢集內或加 NetworkPolicy。
+- **`/metrics` 已不經 Ingress 對外**(只開放 /chat、/health 與網頁),叢集內仍可被抓取;尚未加 NetworkPolicy 限制叢集內誰能連。
+- **對外是 HTTP**(sslip.io 免費網址,無 TLS);Ingress 限流超限時回 503 而非 429(改要調 ingress-nginx 控制器的全域設定,它不在本 repo)。限流要看得到真實來源 IP,需要把 ingress-nginx Service 設為 `externalTrafficPolicy: Local`——這是叢集層級的手動設定,不在 git 裡。
 - **LangSmith 會收到 prompt 內容**:不適合處理敏感資料,正式環境需要遮罩或關閉。
 - Secret 由人手動 `kubectl create`,沒有 Sealed Secrets / External Secrets 之類的管理。
 

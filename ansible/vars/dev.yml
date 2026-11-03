@@ -2,4 +2,4 @@
 chatbot_config:
   geminiModel: "gemini-3.6-flash"
   temperature: "0.3"
-  corsOrigins: "http://chatbot.local"
+  corsOrigins: "http://chat.172-184-203-57.sslip.io"

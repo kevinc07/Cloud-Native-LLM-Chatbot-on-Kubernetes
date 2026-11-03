@@ -27,9 +27,10 @@ GitOps 自動發版、SLO 與告警、無狀態水平擴充、快取降級、可
                                           │ helm render + apply
  ┌────────────────────────── AKS ─────────▼──────────────────────────┐
  │                                                                    │
- │  Ingress(nginx)                                                   │
- │   ├─ chatbot.local      → frontend(nginx + React, 2 replicas)     │
- │   └─ api.chatbot.local  → backend(FastAPI, HPA 1–5)               │
+ │  Ingress(nginx,同一個網址、依路徑分流、每個 IP 限流)             │
+ │   ├─ /chat /health → backend(FastAPI, HPA 1–5)                    │
+ │   └─ 其他(/)       → frontend(nginx + React, 2 replicas)         │
+ │   (/metrics 不對外,Prometheus 在叢集內直接連 backend)            │
  │                              │            │            │           │
  │                              ▼            ▼            ▼           │
  │                           MongoDB      Redis       Gemini API      │
@@ -90,6 +91,9 @@ kubectl apply -f argocd/application.yaml     # 之後所有變更都走 git
 ```
 
 之後的日常流程只有 `git push`。
+
+對外網址是 `http://chat.<Ingress 公網 IP 用 - 連接>.sslip.io`(免費 DNS 服務,不需買網域;只有 HTTP)。
+`/chat` 對每個來源 IP 限流,`/metrics` 不對外。
 
 ## 設計取捨與已知限制
 

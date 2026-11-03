@@ -39,7 +39,7 @@ frontend:
 config:
   geminiModel: "gemini-3.6-flash"
   temperature: "0.3"
-  corsOrigins: "http://chatbot.local"
+  corsOrigins: "http://chat.172-184-203-57.sslip.io"
   historyMaxMessages: "20"   # 送給 LLM 的歷史上限(則數)
   maxOutputTokens: "2048"    # 限制單次輸出(含 reasoning token),成本控制
 
@@ -80,8 +80,13 @@ redis:
     limits: { cpu: 200m, memory: 96Mi }
 
 ingress:
-  frontendHost: chatbot.local
-  backendHost: api.chatbot.local
+  # sslip.io 是免費的 DNS 服務:<名稱>.<IP 用 - 連接>.sslip.io 會自動解析成那個 IP。
+  # 這個 IP 是 ingress-nginx 的 LoadBalancer 公網 IP(kubectl -n ingress-nginx get svc);IP 變了這裡就要跟著改。
+  host: chat.172-184-203-57.sslip.io
+  rateLimit:            # 每個來源 IP
+    apiRps: 1           # /chat:每秒 1 個(真人操作遠低於此;腳本狂打會被擋)
+    apiConnections: 5   # /chat:同時最多 5 條連線
+    frontendRps: 20     # 靜態網頁:載入一頁會連抓好幾個檔案,所以較鬆
 
 # Day 10:受限的唯讀身分(只能 get/list pod),用來示範 RBAC 擋權限。
 rbac:

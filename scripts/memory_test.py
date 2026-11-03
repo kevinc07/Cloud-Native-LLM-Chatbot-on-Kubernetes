@@ -5,14 +5,14 @@
 如果某一輪突然掉回 0 或變小,代表請求被分到另一個 pod,而那個 pod 的記憶體沒有這段對話。
 
 用法:python scripts/memory_test.py [輪數] [base_url] [Host header]
-例:python scripts/memory_test.py 12 http://172.184.203.57 api.chatbot.local
+例:python scripts/memory_test.py 12 http://chat.172-184-203-57.sslip.io
 """
 import json
 import sys
 import urllib.request
 
 ROUNDS = int(sys.argv[1]) if len(sys.argv) > 1 else 12
-BASE = sys.argv[2] if len(sys.argv) > 2 else "http://api.chatbot.local"
+BASE = sys.argv[2] if len(sys.argv) > 2 else "http://chat.172-184-203-57.sslip.io"
 HOST = sys.argv[3] if len(sys.argv) > 3 else BASE.split("//", 1)[1]
 
 
