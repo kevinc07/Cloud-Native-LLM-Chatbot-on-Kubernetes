@@ -55,6 +55,16 @@ Every claim below links to a measured result.
 
 ## Screenshots
 
+**Grafana dashboard** (provisioned from git as a ConfigMap): SLO stats and burn rate on top, then traffic, latency, LLM tokens, estimated cost and cache hit ratio.
+This capture was taken shortly after a cluster restart with very little traffic, so a few early errors dominate the 1-hour ratios.
+The low-traffic guard (fewer than 10 requests per hour → no alert) is why **Firing alerts = 0** despite the red numbers.
+
+![Grafana Chatbot Overview dashboard](docs/images/grafana-dashboard.webp)
+
+**ArgoCD application tree**: Synced and Healthy, auto-sync on, every resource rendered from the Helm chart in git.
+
+![ArgoCD application tree](docs/images/argocd-app-tree.webp)
+
 **SLO burn-rate alert rule in Prometheus.** It pages only when the 5xx ratio burns the error budget 14.4x faster than allowed over both the 1h and 5m windows, with a minimum-traffic guard.
 
 ![Prometheus burn-rate alert rule](docs/images/prometheus-burn-rate-alert.jpg)
@@ -62,6 +72,54 @@ Every claim below links to a measured result.
 **Retry-amplification alert added after the incident drill.**
 
 ![Prometheus retry amplification alert](docs/images/prometheus-retry-alert.jpg)
+
+## Accessing the cluster tools
+
+Grafana, Prometheus, Alertmanager and ArgoCD have no public endpoint. Reach them with `kubectl port-forward`.
+Each command blocks, so run each one in its own terminal tab; closing the tab closes the tunnel.
+If `kubectl` says `no such host`, the AKS cluster is stopped.
+
+```bash
+az aks start -g rg-chatbot-dev -n aks-chatbot-dev    # ~5 min until the node is Ready
+az aks get-credentials -g rg-chatbot-dev -n aks-chatbot-dev
+kubectl get nodes
+```
+
+| Tool | Port-forward | Open | Login |
+|---|---|---|---|
+| Grafana | `kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80` | http://localhost:3001 → Dashboards → **Chatbot Overview** | `admin` / password below |
+| Prometheus | `kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090` | http://localhost:9090 (Alerts, Query) | none |
+| Alertmanager | `kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9093:9093` | http://localhost:9093 | none |
+| ArgoCD | `kubectl -n argocd port-forward svc/argocd-server 8080:80` | **http**://localhost:8080 (not https: the server runs with `server.insecure: true`) | `admin` / password below |
+
+Passwords are stored in Kubernetes Secrets, never in git:
+
+```bash
+# Grafana (secret created at install time, see monitoring/README.md)
+kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d; echo
+
+# ArgoCD initial admin password ("not found" means it was rotated or deleted)
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+**LangSmith** (per-call prompt, response, latency and tokens) is a hosted service, not in the cluster:
+sign in at https://smith.langchain.com with the account that owns the API key and open the **`chatbot-aks`** project
+(`langsmith.project` in `values.yaml`). Set `langsmith.enabled: false` and push to turn tracing off.
+
+Useful checks:
+
+```bash
+kubectl get pods                          # app pods
+kubectl -n argocd get app chatbot         # expect Synced / Healthy
+kubectl logs deploy/chatbot-backend       # backend logs
+kubectl get hpa                           # autoscaling status
+```
+
+Stop the cluster when you're done; it bills while running:
+
+```bash
+az aks stop -g rg-chatbot-dev -n aks-chatbot-dev
+```
 
 ## Repository layout
 
