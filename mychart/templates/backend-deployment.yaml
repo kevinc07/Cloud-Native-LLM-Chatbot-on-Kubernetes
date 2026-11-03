@@ -34,6 +34,21 @@ spec:
             - containerPort: {{ .Values.backend.containerPort }}
           # requests = 排程時保證給你的量,也是 HPA 算「使用率%」的分母。
           # limits   = 上限:CPU 超過會被限速(throttle),記憶體超過會被 OOMKilled。
+          # readiness:通過才會被 Service 放進流量名單。沒有它,容器一啟動就被當成 Ready,
+          # 滾動更新時 uvicorn 還沒開始監聽,請求就會 502(Day 23 端到端測試實際踩到)。
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.backend.containerPort }}
+            periodSeconds: 3
+            failureThreshold: 3
+          # liveness:卡死(不再回應)時重啟容器。initialDelay 給啟動時間,避免剛起來就被殺。
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.backend.containerPort }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           envFrom:

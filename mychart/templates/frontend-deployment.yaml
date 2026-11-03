@@ -21,5 +21,20 @@ spec:
           image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"
           ports:
             - containerPort: {{ .Values.frontend.containerPort }}
+          # readiness:通過才會被 Service 放進流量名單。沒有它,容器一啟動就被當成 Ready,
+          # 滾動更新時 uvicorn 還沒開始監聽,請求就會 502(Day 23 端到端測試實際踩到)。
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.frontend.containerPort }}
+            periodSeconds: 3
+            failureThreshold: 3
+          # liveness:卡死(不再回應)時重啟容器。initialDelay 給啟動時間,避免剛起來就被殺。
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.frontend.containerPort }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
