@@ -29,7 +29,7 @@ kubectl get ing                        # Ingress
 | Grafana | `kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80` | http://localhost:3001 | `admin` / 見下 |
 | Prometheus | `kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090` | http://localhost:9090 | 無 |
 | Alertmanager | `kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9093:9093` | http://localhost:9093 | 無 |
-| ArgoCD | `kubectl -n argocd port-forward svc/argocd-server 8080:443` | **https**://localhost:8080(憑證警告選繼續) | `admin` / 見下 |
+| ArgoCD | `kubectl -n argocd port-forward svc/argocd-server 8080:80` | **http**://localhost:8080(不是 https:本專案設了 `server.insecure: true`,用 https 會 connection reset) | `admin` / 見下 |
 
 ```bash
 # Grafana 密碼
