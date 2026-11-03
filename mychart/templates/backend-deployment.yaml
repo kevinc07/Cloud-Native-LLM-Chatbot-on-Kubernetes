@@ -32,8 +32,6 @@ spec:
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
           ports:
             - containerPort: {{ .Values.backend.containerPort }}
-          # requests = 排程時保證給你的量,也是 HPA 算「使用率%」的分母。
-          # limits   = 上限:CPU 超過會被限速(throttle),記憶體超過會被 OOMKilled。
           # readiness:通過才會被 Service 放進流量名單。沒有它,容器一啟動就被當成 Ready,
           # 滾動更新時 uvicorn 還沒開始監聽,請求就會 502(Day 23 端到端測試實際踩到)。
           readinessProbe:
@@ -55,6 +53,8 @@ spec:
             preStop:
               exec:
                 command: ["sleep", "5"]
+          # requests = 排程時保證給你的量,也是 HPA 算「使用率%」的分母。
+          # limits   = 上限:CPU 超過會被限速(throttle),記憶體超過會被 OOMKilled。
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           envFrom:
