@@ -36,5 +36,11 @@ spec:
               port: {{ .Values.frontend.containerPort }}
             initialDelaySeconds: 15
             periodSeconds: 10
+          # 優雅下線:Pod 被刪除時,「從 Service/Ingress 名單移除」和「送 SIGTERM」是同時發生、互不等待的,
+          # ingress-nginx 可能還在把請求送給正在關閉的 Pod → 502。先睡 5 秒,讓名單更新傳播完再關。
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
