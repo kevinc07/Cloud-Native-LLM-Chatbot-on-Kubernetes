@@ -8,7 +8,7 @@ imagePullSecrets:
 backend:
   image:
     repository: registry.gitlab.com/usc-group6842244/cloud-native-llm-chatbot-onkubernetes/chatbot-backend
-    tag: fee65355
+    tag: 68bd4264
   containerPort: 8000
   service:
     port: 3030
@@ -24,7 +24,7 @@ frontend:
   replicaCount: 2
   image:
     repository: registry.gitlab.com/usc-group6842244/cloud-native-llm-chatbot-onkubernetes/chatbot-frontend
-    tag: fee65355
+    tag: 68bd4264
   containerPort: 8080
   service:
     port: 8080
