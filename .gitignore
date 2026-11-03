@@ -18,5 +18,3 @@ npm-debug.log*
 .DS_Store
 *.bak
 
-# 誤複製的重複前端副本(內容與 chatbot-frontend/ 相同),整理 repo 時再決定要不要刪
-chatbot-backend/chatbot-frontend/

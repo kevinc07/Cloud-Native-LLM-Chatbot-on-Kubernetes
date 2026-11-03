@@ -1,93 +1,97 @@
-# Cloud-Native-LLM-Chatbot-onKubernetes
+# Cloud-Native LLM Chatbot on Kubernetes
 
+一個跑在 Azure AKS 上的 LLM 聊天服務(FastAPI + LangChain + Gemini),重點不在聊天本身,而在**把它當成正式服務來運維**:
+GitOps 自動發版、SLO 與告警、無狀態水平擴充、快取降級、可重現的故障演練。
 
+## 這個專案實際做到什麼
 
-## Getting started
+| 主題 | 做到的事 | 證據 |
+|---|---|---|
+| **GitOps 發版** | push → GitLab CI(test → build arm64 image → release 把新 tag 寫回 git)→ ArgoCD 自動部署;測試失敗會擋住發版 | [docs/e2e-results.md](docs/e2e-results.md):連續 3 次無人工介入上線,部署期間 0 個非 200;故意壞測試 338 秒內沒有 release |
+| **無狀態 + 快取** | 對話記憶存 MongoDB(source of truth),Redis 做 cache-aside;任一 replica 都能接續同一段對話 | [docs/day9-memory-bug.md](docs/day9-memory-bug.md)(修之前的錯亂)、`scripts/memory_test.py`(修之後歷史每輪 +2) |
+| **SLO 與告警** | 可用性 99%、延遲 95% < 12s;多時間窗 burn-rate 告警;token 成本暴增告警 | [docs/SLO.md](docs/SLO.md)、`mychart/templates/prometheusrule.yaml` |
+| **資源與擴縮** | requests/limits、HPA(1–5)、readiness/liveness probe、preStop 優雅下線 | `mychart/templates/backend-deployment.yaml` |
+| **設定自動化** | Ansible 驗證輸入後改 values.yaml 的 ConfigMap 設定,走 git 讓 ArgoCD 部署 | [ansible/README.md](ansible/README.md) |
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## 架構
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/usc-group6842244/cloud-native-llm-chatbot-onkubernetes.git
-git branch -M main
-git push -uf origin main
+                       ┌──────────────── GitLab ────────────────┐
+  git push ──────────► │ test(pytest, helm lint)               │
+                       │  → build(arm64 image → Container Reg.) │
+                       │  → release(把 SHA tag 寫回 values.yaml)│
+                       └──────────────────┬─────────────────────┘
+                                          │ git 變更
+                                          ▼
+                                   ArgoCD(auto-sync, prune, selfHeal)
+                                          │ helm render + apply
+ ┌────────────────────────── AKS ─────────▼──────────────────────────┐
+ │                                                                    │
+ │  Ingress(nginx)                                                   │
+ │   ├─ chatbot.local      → frontend(nginx + React, 2 replicas)     │
+ │   └─ api.chatbot.local  → backend(FastAPI, HPA 1–5)               │
+ │                              │            │            │           │
+ │                              ▼            ▼            ▼           │
+ │                           MongoDB      Redis       Gemini API      │
+ │                       (source of truth) (快取,可丟) (外部)         │
+ │                                                                    │
+ │  Prometheus ◄── /metrics(ServiceMonitor)   Grafana(dashboard)    │
+ │  Alertmanager ◄── PrometheusRule(SLO burn-rate、token 成本)       │
+ └────────────────────────────────────────────────────────────────────┘
 ```
 
-## Integrate with your tools
+### 一次 `/chat` 請求
 
-* [Set up project integrations](https://gitlab.com/usc-group6842244/cloud-native-llm-chatbot-onkubernetes/-/settings/integrations)
+1. Ingress 把請求分給任一 backend replica(replica 之間沒有共享記憶體)。
+2. `get_history`:先查 Redis → miss 就從 Mongo 讀最近 20 則並回填 → Redis 掛了就直讀 Mongo。
+3. 帶著歷史呼叫 Gemini(`max_output_tokens` 限制單次成本)。
+4. 先寫 Mongo,成功後才更新 Redis。Mongo 寫失敗回 503;Gemini 失敗回 502(兩者在指標上可分辨)。
+5. 回應帶 `X-Served-By` / `X-History-Len`,用來驗證「換 pod 後歷史沒掉」。
 
-## Collaborate with your team
+## 目錄
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+| 路徑 | 內容 |
+|---|---|
+| `chatbot-backend/` | FastAPI 服務、`chat_store.py`(Mongo+Redis)、`metrics.py`、`tests/`(21 個測試) |
+| `chatbot-frontend/` | React 前端 + nginx |
+| `mychart/` | Helm chart:Deployment、HPA、Redis、Mongo、Ingress、ServiceMonitor、PrometheusRule、Grafana dashboard |
+| `argocd/` | ArgoCD 安裝 values 與 Application |
+| `.gitlab-ci.yml` | test → build → release |
+| `ansible/` | ConfigMap 設定更新 playbook |
+| `monitoring/` | kube-prometheus-stack 安裝與 dashboard 產生器 |
+| `scripts/` | `memory_test.py`(多 replica 記憶一致性)、`load.sh`(負載) |
+| `docs/` | SLO、端到端驗證、設計取捨與已知限制、各階段圖解 PDF |
 
-## Test and Deploy
+## 本機執行
 
-Use the built-in continuous integration in GitLab.
+```bash
+cd chatbot-backend
+python -m venv venv && source venv/bin/activate
+pip install -r requirements-dev.txt
+python -m pytest -v            # 不需要 Gemini key、Mongo、Redis(用 fakeredis 與假 collection)
+```
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```bash
+# 本機體驗前後端(需要 chatbot-backend/.env,內含 GOOGLE_API_KEY;不要進 git)
+docker compose up --build      # 前端 :3000,後端 :8000
+```
 
-***
+注意:`docker-compose.yml` 是早期的本機開發用,**沒有 Redis,也沒有把 backend 接上 Mongo**,
+後端會退回程序內的 dict(只供開發)。要驗證 Mongo+Redis 與多 replica 行為,請用 AKS。
 
-# Editing this README
+## 部署到 AKS(摘要)
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Secret 都由人手動建立、**不進 git**:`chatbot-secret`(Gemini key)、`mongo-secret`、`langsmith-secret`、
+`gitlab-registry`(拉 image 的 deploy token)。GitLab 專案需要 CI 變數 `CI_PUSH_TOKEN`(Maintainer、`write_repository`、masked)。
 
-## Suggestions for a good README
+```bash
+helm install argocd argo/argo-cd -n argocd --create-namespace -f argocd/values.yaml
+kubectl apply -f argocd/application.yaml     # 之後所有變更都走 git
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+之後的日常流程只有 `git push`。
 
-## Name
-Choose a self-explaining name for your project.
+## 設計取捨與已知限制
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+寫在 [docs/design.md](docs/design.md):為什麼這樣選、哪些刻意沒做、哪些是還沒做的缺口。
+面試時被問到「這個有什麼問題」,答案在那裡。
